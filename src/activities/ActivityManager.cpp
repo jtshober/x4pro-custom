@@ -363,27 +363,13 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefr
     }
   }
 
-  // HomeMenuItem -> starting shell tab. FILE_TRANSFER lands on Settings: File
-  // Sharing is meant to move back into Settings as part of this redesign, so
-  // route it there now even though the row itself hasn't moved yet (that's
-  // still a plain File Transfer launch via Settings for the moment).
-  AppShellActivity::Tab startTab = AppShellActivity::Tab::Continue;
-  switch (initialMenuItem) {
-    case HomeMenuItem::FILE_BROWSER:
-      startTab = AppShellActivity::Tab::Books;
-      break;
-    case HomeMenuItem::OPDS_BROWSER:
-      startTab = AppShellActivity::Tab::BookServer;
-      break;
-    case HomeMenuItem::FILE_TRANSFER:
-    case HomeMenuItem::SETTINGS_MENU:
-      startTab = AppShellActivity::Tab::Settings;
-      break;
-    case HomeMenuItem::RECENTS:
-    case HomeMenuItem::NONE:
-      startTab = AppShellActivity::Tab::Continue;
-      break;
-  }
+  // HomeMenuItem -> starting shell tab. Always Continue: the Home gesture,
+  // waking with no book open, and backing out of any screen should all land
+  // there, not on whichever tab a screen "belongs to" -- explicit request.
+  // initialMenuItem is still computed above (harmless) but intentionally
+  // unused for tab selection now.
+  (void)initialMenuItem;
+  const AppShellActivity::Tab startTab = AppShellActivity::Tab::Continue;
   replaceActivity(std::make_unique<AppShellActivity>(renderer, mappedInput, startTab));
 }
 void ActivityManager::goToCrashReport() { replaceActivity(std::make_unique<CrashActivity>(renderer, mappedInput)); }

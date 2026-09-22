@@ -36,34 +36,80 @@ const char* tabLabel(const AppShellActivity::Tab tab) {
 }
 
 // Largest of the sizes drawFittedTitle tries -- callers reserve layout space
-// for this regardless of which size ends up used, since a smaller size only
-// ever needs less room, never more.
+// for this regardless of which size (or how many lines) ends up used, since
+// smaller/fewer only ever needs less room, never more.
 constexpr int TITLE_MAX_FONT_ID = NOTOSANS_18_FONT_ID;
+// Fixed vertical gap between the title's two lines, when two are used.
+constexpr int TITLE_LINE_GAP = 6;
 
-// Draws `title` centered under the cover, shrinking through a few sizes
-// until it fits in `maxWidth`, and truncating with an ellipsis at the
-// smallest size as a last resort -- so a long title never runs off the
-// screen the way a single fixed size did in v0.2.
-void drawFittedTitle(const GfxRenderer& renderer, const Rect body, const int y, const std::string& title,
-                     const int maxWidth) {
+// Greedily splits `title` on spaces into two lines at `fontId`: line1 gets as
+// many whole words as fit in maxWidth, line2 gets the rest. Returns false
+// (leaving line1/line2 untouched) if line2 still doesn't fit even after
+// wrapping -- a caller should then either try a smaller font or fall back to
+// truncation, not assume wrapping always succeeds (one very long word alone
+// can still overflow, for instance).
+bool wrapTitleTwoLines(const GfxRenderer& renderer, const int fontId, const std::string& title, const int maxWidth,
+                       std::string& line1, std::string& line2) {
+  size_t splitAt = std::string::npos;
+  size_t searchFrom = 0;
+  while (true) {
+    const size_t spaceAt = title.find(' ', searchFrom);
+    const size_t candidateEnd = (spaceAt == std::string::npos) ? title.size() : spaceAt;
+    if (renderer.getTextWidth(fontId, title.substr(0, candidateEnd).c_str()) > maxWidth) break;
+    splitAt = candidateEnd;
+    if (spaceAt == std::string::npos) break;
+    searchFrom = spaceAt + 1;
+  }
+  if (splitAt == std::string::npos || splitAt >= title.size()) return false;  // Not even one word fits, or fits whole.
+  line1 = title.substr(0, splitAt);
+  line2 = title.substr(title.find_first_not_of(' ', splitAt));
+  return !line2.empty() && renderer.getTextWidth(fontId, line2.c_str()) <= maxWidth;
+}
+
+void drawCenteredLine(const GfxRenderer& renderer, const Rect body, const int fontId, const int y,
+                     const std::string& text) {
+  const int width = renderer.getTextWidth(fontId, text.c_str());
+  renderer.drawText(fontId, body.x + std::max(0, (body.width - width) / 2), y, text.c_str());
+}
+
+// Draws `title` centered under the cover, within a `blockHeight`-tall
+// reserved area starting at `blockY` (always the same height regardless of
+// how many lines a given title actually needs, so the layout doesn't shift
+// as you swipe between short- and long-title books). Prefers one line;
+// wraps to two, shrinking through a few sizes as needed, if it doesn't fit
+// on one; truncates the second line with an ellipsis as a last resort.
+void drawFittedTitle(const GfxRenderer& renderer, const Rect body, const int blockY, const int blockHeight,
+                     const std::string& title, const int maxWidth) {
   static const int fontIds[] = {NOTOSANS_18_FONT_ID, NOTOSANS_16_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_12_FONT_ID};
+
   for (const int fontId : fontIds) {
     if (renderer.getTextWidth(fontId, title.c_str()) <= maxWidth) {
-      const int width = renderer.getTextWidth(fontId, title.c_str());
-      renderer.drawText(fontId, body.x + std::max(0, (body.width - width) / 2), y, title.c_str());
+      const int lineHeight = renderer.getLineHeight(fontId);
+      drawCenteredLine(renderer, body, fontId, blockY + (blockHeight - lineHeight) / 2, title);
       return;
     }
   }
-  // Even the smallest size doesn't fit -- truncate to it character by
-  // character, appending "..." until what's left clears maxWidth.
+  for (const int fontId : fontIds) {
+    std::string line1, line2;
+    if (!wrapTitleTwoLines(renderer, fontId, title, maxWidth, line1, line2)) continue;
+    const int lineHeight = renderer.getLineHeight(fontId);
+    const int pairHeight = 2 * lineHeight + TITLE_LINE_GAP;
+    const int firstY = blockY + std::max(0, (blockHeight - pairHeight) / 2);
+    drawCenteredLine(renderer, body, fontId, firstY, line1);
+    drawCenteredLine(renderer, body, fontId, firstY + lineHeight + TITLE_LINE_GAP, line2);
+    return;
+  }
+  // Nothing fit even wrapped (an unusually long single word, most likely) --
+  // one truncated line at the smallest size, vertically centered same as
+  // the single-line case above.
   const int fontId = fontIds[3];
   std::string truncated = title;
   while (!truncated.empty() && renderer.getTextWidth(fontId, (truncated + "...").c_str()) > maxWidth) {
     truncated.pop_back();
   }
   truncated += "...";
-  const int width = renderer.getTextWidth(fontId, truncated.c_str());
-  renderer.drawText(fontId, body.x + std::max(0, (body.width - width) / 2), y, truncated.c_str());
+  const int lineHeight = renderer.getLineHeight(fontId);
+  drawCenteredLine(renderer, body, fontId, blockY + (blockHeight - lineHeight) / 2, truncated);
 }
 }  // namespace
 
@@ -323,7 +369,10 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   }
 
   constexpr int titleGap = 16;
-  const int titleFontHeight = renderer.getLineHeight(TITLE_MAX_FONT_ID);
+  // Always reserve room for two lines, even for titles that end up using
+  // one -- keeps the cover from shifting vertically as you swipe between
+  // books with short and long titles.
+  const int titleBlockHeight = 2 * renderer.getLineHeight(TITLE_MAX_FONT_ID) + TITLE_LINE_GAP;
 
   // One shared box size for all three covers -- peeks included -- measured
   // from the centered book alone and capped so Continue never towers over
@@ -331,7 +380,7 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   // in the carousel occupies this exact box, never a bigger one for the
   // center and smaller ones for its neighbors.
   const int heightCap = std::min(UITheme::getInstance().getMetrics().homeCoverHeight,
-                                 static_cast<int>((body.height - titleGap - titleFontHeight - titleGap) * 0.75f));
+                                 static_cast<int>((body.height - titleGap - titleBlockHeight - titleGap) * 0.75f));
   int coverWidth = 0;
   int coverHeight = 0;
   measureCoverSize(recentBooks[carouselIndex], heightCap, coverWidth, coverHeight);
@@ -343,7 +392,7 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   }
 
   const bool hasNeighbors = recentBooks.size() > 1;
-  const int blockHeight = coverHeight + titleGap + titleFontHeight;
+  const int blockHeight = coverHeight + titleGap + titleBlockHeight;
   const int blockY = body.y + std::max(0, (body.height - blockHeight) / 2);
   const int centerX = body.x + (body.width - coverWidth) / 2;
 
@@ -360,8 +409,8 @@ void AppShellActivity::renderContinueBody(const Rect body) {
 
   renderCoverBox(centerX, blockY, coverWidth, coverHeight, recentBooks[carouselIndex]);
 
-  const int titleY = blockY + coverHeight + titleGap;
-  drawFittedTitle(renderer, body, titleY, recentBooks[carouselIndex].title, body.width - 48);
+  const int titleBlockY = blockY + coverHeight + titleGap;
+  drawFittedTitle(renderer, body, titleBlockY, titleBlockHeight, recentBooks[carouselIndex].title, body.width - 48);
 }
 
 void AppShellActivity::render(RenderLock&&) {
