@@ -293,7 +293,10 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   coverRectY = body.y;
   coverRectW = body.width - 2 * peekWidth;
   coverRectH = coverRowHeight;
-  const bool bufferRestored = coverBufferStored && restoreCoverBuffer();
+  // Not const: drawRecentBookCover takes this by non-const reference (it can
+  // write back to it, e.g. if a partial restore needs to be reported as a
+  // fresh render instead).
+  bool bufferRestored = coverBufferStored && restoreCoverBuffer();
   GUI.drawRecentBookCover(renderer, Rect{coverRectX, coverRectY, coverRectW, coverRectH}, centered,
                           /*selectorIndex=*/0, coverRendered, coverBufferStored, bufferRestored,
                           std::bind(&AppShellActivity::storeCoverBuffer, this));
