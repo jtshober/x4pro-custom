@@ -73,11 +73,19 @@ class AppShellActivity final : public Activity {
   // primes recentBooks[0], so anything the carousel scrolls to beyond that
   // needs the same on-demand generation here).
   void ensureCoverThumb(const RecentBook& book, int height) const;
-  // Draws one book's cover, aspect-fit and centered within `rect`, bordered.
-  // Falls back to a plain bordered box (never blank) if there's no cover art
-  // or it fails to load -- the title drawn separately below the cover row
-  // still identifies the book either way, so this never duplicates it.
-  void renderCoverBox(Rect rect, const RecentBook& book) const;
+  // Decodes book's cover (generating it first if needed) and reports the
+  // size it would draw at, aspect-fit within a heightCap-tall box -- without
+  // drawing anything. Used once, on the centered book, so every cover in the
+  // carousel shares one box size (peeks included) rather than each sizing
+  // itself independently. width/height are set to 0 if there's no cover or
+  // it fails to load.
+  void measureCoverSize(const RecentBook& book, int heightCap, int& width, int& height) const;
+  // Draws one book's cover at (x, y), aspect-fit and centered within a
+  // boxWidth x boxHeight box -- x (and x + boxWidth) may fall outside the
+  // screen entirely on purpose, for the half-cropped peeking covers; the
+  // renderer safely clips anything off-canvas. Falls back to a plain
+  // bordered placeholder box if there's no cover art or it fails to load.
+  void renderCoverBox(int x, int y, int boxWidth, int boxHeight, const RecentBook& book) const;
   // Books/Book Server/Settings only -- Continue's taps are handled inline in
   // loop() since they act on the carousel, not another top-level screen.
   void openActiveTabTarget();

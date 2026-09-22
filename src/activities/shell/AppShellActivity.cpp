@@ -34,6 +34,37 @@ const char* tabLabel(const AppShellActivity::Tab tab) {
   }
   return "";
 }
+
+// Largest of the sizes drawFittedTitle tries -- callers reserve layout space
+// for this regardless of which size ends up used, since a smaller size only
+// ever needs less room, never more.
+constexpr int TITLE_MAX_FONT_ID = NOTOSANS_18_FONT_ID;
+
+// Draws `title` centered under the cover, shrinking through a few sizes
+// until it fits in `maxWidth`, and truncating with an ellipsis at the
+// smallest size as a last resort -- so a long title never runs off the
+// screen the way a single fixed size did in v0.2.
+void drawFittedTitle(const GfxRenderer& renderer, const Rect body, const int y, const std::string& title,
+                     const int maxWidth) {
+  static const int fontIds[] = {NOTOSANS_18_FONT_ID, NOTOSANS_16_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_12_FONT_ID};
+  for (const int fontId : fontIds) {
+    if (renderer.getTextWidth(fontId, title.c_str()) <= maxWidth) {
+      const int width = renderer.getTextWidth(fontId, title.c_str());
+      renderer.drawText(fontId, body.x + std::max(0, (body.width - width) / 2), y, title.c_str());
+      return;
+    }
+  }
+  // Even the smallest size doesn't fit -- truncate to it character by
+  // character, appending "..." until what's left clears maxWidth.
+  const int fontId = fontIds[3];
+  std::string truncated = title;
+  while (!truncated.empty() && renderer.getTextWidth(fontId, (truncated + "...").c_str()) > maxWidth) {
+    truncated.pop_back();
+  }
+  truncated += "...";
+  const int width = renderer.getTextWidth(fontId, truncated.c_str());
+  renderer.drawText(fontId, body.x + std::max(0, (body.width - width) / 2), y, truncated.c_str());
+}
 }  // namespace
 
 void AppShellActivity::onEnter() {
@@ -206,33 +237,79 @@ void AppShellActivity::ensureCoverThumb(const RecentBook& book, const int height
   }
 }
 
-void AppShellActivity::renderCoverBox(const Rect rect, const RecentBook& book) const {
-  // Always request the SAME height HomeActivity already generates and
-  // caches for its own card, whatever this particular box's rect size is --
-  // getCoverThumbPath resolves to a specific file per height, and this is
-  // the one height reliably present (or reliably generatable) on disk.
-  // drawBitmap does the actual scaling into `rect` below.
-  const int height = UITheme::getInstance().getMetrics().homeCoverHeight;
+namespace {
+// Shared by measureCoverSize() and renderCoverBox() -- aspect-fit dimensions
+// for `bitmap` within a heightCap x widthCap box, never upscaled beyond the
+// bitmap's own native size (this renderer only ever shrinks -- confirmed by
+// reading drawBitmap's source; a target bound above the bitmap's native size
+// is simply not applied).
+void fitCoverDims(const int nativeWidth, const int nativeHeight, const int heightCap, const int widthCap, int& outW,
+                  int& outH) {
+  const float aspect = static_cast<float>(nativeWidth) / static_cast<float>(nativeHeight);
+  outH = std::min(nativeHeight, heightCap);
+  outW = static_cast<int>(outH * aspect);
+  if (outW > widthCap) {
+    outW = widthCap;
+    outH = static_cast<int>(outW / aspect);
+  }
+}
+}  // namespace
+
+void AppShellActivity::measureCoverSize(const RecentBook& book, const int heightCap, int& width,
+                                        int& height) const {
+  width = 0;
+  height = 0;
+  if (book.coverBmpPath.empty()) return;
+  const int genHeight = UITheme::getInstance().getMetrics().homeCoverHeight;
+  ensureCoverThumb(book, genHeight);
+  const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, genHeight);
+  HalFile file;
+  if (!Storage.openFileForRead("SHELL", coverPath, file)) return;
+  Bitmap bitmap(file);
+  if (bitmap.parseHeaders() != BmpReaderError::Ok || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) return;
+  fitCoverDims(bitmap.getWidth(), bitmap.getHeight(), heightCap, heightCap * 2, width, height);
+}
+
+void AppShellActivity::renderCoverBox(const int x, const int y, const int boxWidth, const int boxHeight,
+                                      const RecentBook& book) const {
+  // x may be negative, or x + drawn width may exceed the screen width, on
+  // purpose -- the two peeking covers are meant to be half cropped by the
+  // screen edge. Safe: the renderer clips every pixel outside the visible
+  // screen rather than writing it (checked in both drawBitmap's general path
+  // and its 1-bit fast path).
   bool drew = false;
   if (!book.coverBmpPath.empty()) {
-    ensureCoverThumb(book, height);
-    const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, height);
+    const int genHeight = UITheme::getInstance().getMetrics().homeCoverHeight;
+    ensureCoverThumb(book, genHeight);
+    const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, genHeight);
     HalFile file;
     if (Storage.openFileForRead("SHELL", coverPath, file)) {
       Bitmap bitmap(file);
       if (bitmap.parseHeaders() == BmpReaderError::Ok && bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
-        const float aspect = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
-        int width = static_cast<int>(rect.height * aspect);
-        width = std::min(width, rect.width);
-        const int x = rect.x + std::max(0, (rect.width - width) / 2);
-        renderer.drawBitmap(bitmap, x, rect.y, width, rect.height);
-        renderer.drawRect(x, rect.y, width, rect.height);
+        int width, height;
+        fitCoverDims(bitmap.getWidth(), bitmap.getHeight(), boxHeight, boxWidth, width, height);
+        // Letterbox within the shared box if this book's own aspect ratio
+        // differs from whichever book the box size was measured from, so
+        // every cover in the carousel occupies an identically sized box
+        // without ever stretching an image out of its own proportions.
+        const int drawX = x + (boxWidth - width) / 2;
+        const int drawY = y + (boxHeight - height) / 2;
+        renderer.drawBitmap(bitmap, drawX, drawY, width, height);
+        renderer.drawRect(drawX, drawY, width, height);
         drew = true;
       }
     }
   }
   if (!drew) {
-    renderer.drawRect(rect.x, rect.y, rect.width, rect.height);
+    // No cover art: bordered placeholder at a plausible cover proportion
+    // (2:3), centered in the same box every real cover would occupy.
+    int height = std::min(boxHeight, static_cast<int>(boxWidth * 1.5f));
+    int width = static_cast<int>(height * 2.0f / 3.0f);
+    if (width > boxWidth) {
+      width = boxWidth;
+      height = static_cast<int>(width * 1.5f);
+    }
+    renderer.drawRect(x + (boxWidth - width) / 2, y + (boxHeight - height) / 2, width, height);
   }
 }
 
@@ -246,27 +323,45 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   }
 
   constexpr int titleGap = 16;
-  const int titleFontHeight = renderer.getLineHeight(NOTOSANS_18_FONT_ID);
-  const int coverRowHeight = std::max(0, body.height - titleGap - titleFontHeight - titleGap);
+  const int titleFontHeight = renderer.getLineHeight(TITLE_MAX_FONT_ID);
 
-  const bool hasNeighbors = recentBooks.size() > 1;
-  const int peekWidth = hasNeighbors ? body.width / 5 : 0;
-  const int peekHeight = coverRowHeight * 3 / 4;
-  const int peekY = body.y + (coverRowHeight - peekHeight) / 2;
-
-  if (hasNeighbors) {
-    renderCoverBox(Rect{body.x, peekY, peekWidth, peekHeight}, recentBooks[previousCarouselIndex()]);
-    renderCoverBox(Rect{body.x + body.width - peekWidth, peekY, peekWidth, peekHeight},
-                   recentBooks[nextCarouselIndex()]);
+  // One shared box size for all three covers -- peeks included -- measured
+  // from the centered book alone and capped so Continue never towers over
+  // the rest of the screen. "Identical size" per the reference: every cover
+  // in the carousel occupies this exact box, never a bigger one for the
+  // center and smaller ones for its neighbors.
+  const int heightCap = std::min(UITheme::getInstance().getMetrics().homeCoverHeight,
+                                 static_cast<int>((body.height - titleGap - titleFontHeight - titleGap) * 0.75f));
+  int coverWidth = 0;
+  int coverHeight = 0;
+  measureCoverSize(recentBooks[carouselIndex], heightCap, coverWidth, coverHeight);
+  if (coverWidth <= 0 || coverHeight <= 0) {
+    // Centered book has no cover art at all -- fall back to a plausible
+    // cover proportion (2:3) so peeks still have a real, non-zero box size.
+    coverHeight = heightCap;
+    coverWidth = coverHeight * 2 / 3;
   }
 
-  renderCoverBox(Rect{body.x + peekWidth, body.y, body.width - 2 * peekWidth, coverRowHeight},
-                 recentBooks[carouselIndex]);
+  const bool hasNeighbors = recentBooks.size() > 1;
+  const int blockHeight = coverHeight + titleGap + titleFontHeight;
+  const int blockY = body.y + std::max(0, (body.height - blockHeight) / 2);
+  const int centerX = body.x + (body.width - coverWidth) / 2;
 
-  const std::string& title = recentBooks[carouselIndex].title;
-  const int titleWidth = renderer.getTextWidth(NOTOSANS_18_FONT_ID, title.c_str());
-  const int titleY = body.y + coverRowHeight + titleGap;
-  renderer.drawText(NOTOSANS_18_FONT_ID, body.x + std::max(0, (body.width - titleWidth) / 2), titleY, title.c_str());
+  if (hasNeighbors) {
+    // Roughly Page's peek amount: just under half of each neighbor visible,
+    // flush against the screen edge, the rest safely clipped off-canvas.
+    constexpr float visibleFraction = 0.42f;
+    const int visibleWidth = std::max(1, static_cast<int>(coverWidth * visibleFraction));
+    const int leftX = body.x - (coverWidth - visibleWidth);
+    const int rightX = body.x + body.width - visibleWidth;
+    renderCoverBox(leftX, blockY, coverWidth, coverHeight, recentBooks[previousCarouselIndex()]);
+    renderCoverBox(rightX, blockY, coverWidth, coverHeight, recentBooks[nextCarouselIndex()]);
+  }
+
+  renderCoverBox(centerX, blockY, coverWidth, coverHeight, recentBooks[carouselIndex]);
+
+  const int titleY = blockY + coverHeight + titleGap;
+  drawFittedTitle(renderer, body, titleY, recentBooks[carouselIndex].title, body.width - 48);
 }
 
 void AppShellActivity::render(RenderLock&&) {
