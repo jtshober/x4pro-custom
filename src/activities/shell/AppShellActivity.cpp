@@ -1,14 +1,16 @@
 #include "AppShellActivity.h"
 
 #include <Bitmap.h>
+#include <Epub.h>
+#include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Xtc.h>
 
 #include <algorithm>
-#include <functional>
 
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
@@ -16,9 +18,9 @@
 #include "fontIds.h"
 
 namespace {
-// Not yet run through the localization pipeline (see the header's Scope
-// note) -- English only until this shell is confirmed and worth wiring into
-// the 34-language string tables like the rest of the app's UI text.
+// Not yet run through the localization pipeline -- English only until this
+// shell is confirmed and worth wiring into the 34-language string tables
+// like the rest of the app's UI text.
 const char* tabLabel(const AppShellActivity::Tab tab) {
   switch (tab) {
     case AppShellActivity::Tab::Continue:
@@ -41,11 +43,6 @@ void AppShellActivity::onEnter() {
   requestUpdate();
 }
 
-void AppShellActivity::onExit() {
-  Activity::onExit();
-  freeCoverBuffer();
-}
-
 void AppShellActivity::loadRecentBooks() {
   recentBooks.clear();
   for (const RecentBook& book : RECENT_BOOKS.getBooks()) {
@@ -53,46 +50,6 @@ void AppShellActivity::loadRecentBooks() {
     recentBooks.push_back(book);
     if (recentBooks.size() >= MAX_CAROUSEL_BOOKS) break;
   }
-}
-
-bool AppShellActivity::storeCoverBuffer() {
-  if (coverRectW <= 0 || coverRectH <= 0) return false;
-  freeCoverBuffer();
-  const size_t needed = renderer.getRegionByteSize(coverRectX, coverRectY, coverRectW, coverRectH);
-  if (needed == 0) return false;
-  coverBuffer = static_cast<uint8_t*>(malloc(needed));
-  if (!coverBuffer) {
-    LOG_ERR("SHELL", "OOM: Continue cover buffer (%u bytes)", (unsigned)needed);
-    return false;
-  }
-  coverBufferSize = needed;
-  if (!renderer.copyRegionToBuffer(coverRectX, coverRectY, coverRectW, coverRectH, coverBuffer, coverBufferSize)) {
-    free(coverBuffer);
-    coverBuffer = nullptr;
-    coverBufferSize = 0;
-    return false;
-  }
-  coverBufferStored = true;
-  return true;
-}
-
-bool AppShellActivity::restoreCoverBuffer() {
-  if (!coverBuffer || coverRectW <= 0 || coverRectH <= 0) return false;
-  return renderer.copyBufferToRegion(coverRectX, coverRectY, coverRectW, coverRectH, coverBuffer, coverBufferSize);
-}
-
-void AppShellActivity::freeCoverBuffer() {
-  if (coverBuffer) {
-    free(coverBuffer);
-    coverBuffer = nullptr;
-  }
-  coverBufferSize = 0;
-  coverBufferStored = false;
-}
-
-void AppShellActivity::invalidateCoverCache() {
-  coverRendered = false;
-  freeCoverBuffer();
 }
 
 size_t AppShellActivity::nextCarouselIndex() const {
@@ -108,16 +65,22 @@ size_t AppShellActivity::previousCarouselIndex() const {
 void AppShellActivity::setCarouselIndex(const size_t index) {
   if (index == carouselIndex) return;
   carouselIndex = index;
-  // A different book is now centered -- the cached cover buffer belongs to
-  // the old one.
-  invalidateCoverCache();
   requestUpdate();
 }
 
 void AppShellActivity::switchTab(const Tab tab) {
   if (tab == activeTab) return;
   activeTab = tab;
-  invalidateCoverCache();
+  if (tab != Tab::Continue) {
+    // Live tap while already on the shell: jump straight into the real
+    // screen, no intermediate panel. (Re-entering the shell with one of
+    // these tabs preselected -- e.g. after backing out of Books -- does NOT
+    // go through here, so it still shows the panel; forwarding on THAT path
+    // too would make Back bounce you straight back into the screen you just
+    // left. See the header comment.)
+    openActiveTabTarget();
+    return;
+  }
   requestUpdate();
 }
 
@@ -159,6 +122,8 @@ void AppShellActivity::loop() {
       } else if (tx >= pageWidth - peekWidth) {
         setCarouselIndex(nextCarouselIndex());
       } else {
+        // Tapping the centered cover (or its title) opens it -- no separate
+        // "Continue Reading" button.
         activityManager.goToReader(recentBooks[carouselIndex].path);
       }
     } else {
@@ -167,8 +132,7 @@ void AppShellActivity::loop() {
     return;
   }
 
-  // Swipe is reserved for the Continue carousel -- it does not switch tabs
-  // (see the class comment in the header for why).
+  // Swipe is reserved for the Continue carousel -- it does not switch tabs.
   if (activeTab != Tab::Continue || recentBooks.size() < 2) return;
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Left) {
@@ -183,7 +147,7 @@ void AppShellActivity::renderTabBar(const Rect rect) {
 
   const int segmentWidth = rect.width / TAB_COUNT;
   constexpr int fontId = SMALL_FONT_ID;
-  constexpr int pillMargin = 6;
+  constexpr int pillMargin = 4;
   const int lineHeight = renderer.getLineHeight(fontId);
 
   for (int i = 0; i < TAB_COUNT; i++) {
@@ -196,9 +160,6 @@ void AppShellActivity::renderTabBar(const Rect rect) {
     const int textX = segmentX + std::max(0, (segmentWidth - textWidth) / 2);
 
     if (active) {
-      // Filled pill, not the battery-strip look every other themed header
-      // uses -- this is the one place in the shell meant to read at a glance
-      // as "you are here" rather than match the rest of the app's chrome.
       renderer.fillRect(segmentX + pillMargin, rect.y + pillMargin, segmentWidth - 2 * pillMargin,
                         rect.height - 2 * pillMargin, true);
       renderer.drawText(fontId, textX, textY, label, /*black=*/false);
@@ -224,17 +185,40 @@ void AppShellActivity::renderLaunchPanelBody(const Rect body, const char* label)
   renderer.drawText(hintFontId, body.x + std::max(0, (body.width - hintWidth) / 2), blockY + labelHeight + gap, hint);
 }
 
-// Loads and draws one book's cover, aspect-fit within `rect`'s height and
-// centered in its width, with a plain border. No caching -- this is only
-// ever asked to draw the small, occasionally-shown peek covers. Falls back
-// to a bordered box with the title if there's no cover art or it fails to
-// load; never leaves the slot blank.
-void AppShellActivity::renderPeekCover(const Rect rect, const RecentBook& book) const {
+void AppShellActivity::ensureCoverThumb(const RecentBook& book, const int height) const {
+  if (book.coverBmpPath.empty()) return;
+  const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, height);
+  if (Storage.exists(coverPath.c_str())) return;
+
+  // First time the carousel has shown this book at this size -- generate it,
+  // the same way HomeActivity primes its single card. HomeActivity shows a
+  // popup for this; skipped here to keep this a plain, silent helper. It
+  // only costs anything the first time a given book is scrolled to.
+  if (FsHelpers::hasEpubExtension(book.path)) {
+    Epub epub(book.path, "/.crosspoint");
+    epub.load(false, true);  // Metadata only -- no CSS needed just to grab the cover.
+    epub.generateThumbBmp(height);
+  } else if (FsHelpers::hasXtcExtension(book.path)) {
+    Xtc xtc(book.path, "/.crosspoint");
+    if (xtc.load()) {
+      xtc.generateThumbBmp(height);
+    }
+  }
+}
+
+void AppShellActivity::renderCoverBox(const Rect rect, const RecentBook& book) const {
+  // Always request the SAME height HomeActivity already generates and
+  // caches for its own card, whatever this particular box's rect size is --
+  // getCoverThumbPath resolves to a specific file per height, and this is
+  // the one height reliably present (or reliably generatable) on disk.
+  // drawBitmap does the actual scaling into `rect` below.
+  const int height = UITheme::getInstance().getMetrics().homeCoverHeight;
   bool drew = false;
   if (!book.coverBmpPath.empty()) {
-    const std::string coverBmpPath = UITheme::getCoverThumbPath(book.coverBmpPath, rect.height);
+    ensureCoverThumb(book, height);
+    const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, height);
     HalFile file;
-    if (Storage.openFileForRead("SHELL", coverBmpPath, file)) {
+    if (Storage.openFileForRead("SHELL", coverPath, file)) {
       Bitmap bitmap(file);
       if (bitmap.parseHeaders() == BmpReaderError::Ok && bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
         const float aspect = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
@@ -249,11 +233,6 @@ void AppShellActivity::renderPeekCover(const Rect rect, const RecentBook& book) 
   }
   if (!drew) {
     renderer.drawRect(rect.x, rect.y, rect.width, rect.height);
-    constexpr int fontId = SMALL_FONT_ID;
-    const int textWidth = renderer.getTextWidth(fontId, book.title.c_str());
-    const int textX = rect.x + std::max(0, (rect.width - textWidth) / 2);
-    const int textY = rect.y + std::max(0, (rect.height - renderer.getLineHeight(fontId)) / 2);
-    renderer.drawText(fontId, textX, textY, book.title.c_str());
   }
 }
 
@@ -266,55 +245,28 @@ void AppShellActivity::renderContinueBody(const Rect body) {
     return;
   }
 
-  constexpr int ctaHeight = 56;
-  constexpr int ctaMargin = 24;
   constexpr int titleGap = 16;
   const int titleFontHeight = renderer.getLineHeight(NOTOSANS_18_FONT_ID);
-  const int coverRowHeight =
-      std::max(0, body.height - titleGap - titleFontHeight - titleGap - ctaHeight - titleGap);
+  const int coverRowHeight = std::max(0, body.height - titleGap - titleFontHeight - titleGap);
 
   const bool hasNeighbors = recentBooks.size() > 1;
   const int peekWidth = hasNeighbors ? body.width / 5 : 0;
   const int peekHeight = coverRowHeight * 3 / 4;
   const int peekY = body.y + (coverRowHeight - peekHeight) / 2;
 
-  // Side peeks first, so the centered cover's border/cache overlaps cleanly
-  // on top if the two ever touch at narrow screen widths.
   if (hasNeighbors) {
-    renderPeekCover(Rect{body.x, peekY, peekWidth, peekHeight}, recentBooks[previousCarouselIndex()]);
-    renderPeekCover(Rect{body.x + body.width - peekWidth, peekY, peekWidth, peekHeight},
-                    recentBooks[nextCarouselIndex()]);
+    renderCoverBox(Rect{body.x, peekY, peekWidth, peekHeight}, recentBooks[previousCarouselIndex()]);
+    renderCoverBox(Rect{body.x + body.width - peekWidth, peekY, peekWidth, peekHeight},
+                   recentBooks[nextCarouselIndex()]);
   }
 
-  // Centered cover: same cached-buffer path as HomeActivity's cover tile,
-  // now keyed to whichever book the carousel has centered.
-  const std::vector<RecentBook> centered{recentBooks[carouselIndex]};
-  coverRectX = body.x + peekWidth;
-  coverRectY = body.y;
-  coverRectW = body.width - 2 * peekWidth;
-  coverRectH = coverRowHeight;
-  // Not const: drawRecentBookCover takes this by non-const reference (it can
-  // write back to it, e.g. if a partial restore needs to be reported as a
-  // fresh render instead).
-  bool bufferRestored = coverBufferStored && restoreCoverBuffer();
-  GUI.drawRecentBookCover(renderer, Rect{coverRectX, coverRectY, coverRectW, coverRectH}, centered,
-                          /*selectorIndex=*/0, coverRendered, coverBufferStored, bufferRestored,
-                          std::bind(&AppShellActivity::storeCoverBuffer, this));
+  renderCoverBox(Rect{body.x + peekWidth, body.y, body.width - 2 * peekWidth, coverRowHeight},
+                 recentBooks[carouselIndex]);
 
   const std::string& title = recentBooks[carouselIndex].title;
   const int titleWidth = renderer.getTextWidth(NOTOSANS_18_FONT_ID, title.c_str());
   const int titleY = body.y + coverRowHeight + titleGap;
   renderer.drawText(NOTOSANS_18_FONT_ID, body.x + std::max(0, (body.width - titleWidth) / 2), titleY, title.c_str());
-
-  // The one call-to-action band in the whole shell: a filled pill rather
-  // than a list row, icon, or menu -- deliberately not matching the look of
-  // Books/Book Server/Settings or of any existing CrossPoint screen.
-  const int ctaY = body.y + body.height - ctaHeight;
-  renderer.fillRect(body.x + ctaMargin, ctaY, body.width - 2 * ctaMargin, ctaHeight, true);
-  const char* cta = tr(STR_CONTINUE_READING);
-  const int ctaTextWidth = renderer.getTextWidth(NOTOSANS_16_FONT_ID, cta);
-  const int ctaTextY = ctaY + (ctaHeight - renderer.getLineHeight(NOTOSANS_16_FONT_ID)) / 2;
-  renderer.drawText(NOTOSANS_16_FONT_ID, body.x + (body.width - ctaTextWidth) / 2, ctaTextY, cta, /*black=*/false);
 }
 
 void AppShellActivity::render(RenderLock&&) {

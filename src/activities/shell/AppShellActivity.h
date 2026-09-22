@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 #include <vector>
 
 #include "RecentBooksStore.h"
@@ -15,19 +14,21 @@ struct Rect;
 // separate Activities -- so switching tabs is just a redraw, not a full
 // Activity teardown/rebuild.
 //
-// Gesture split (deliberate, from user testing of the first draft): swipe is
-// NOT used to move between the four tabs -- only tapping the tab bar does
-// that. Swipe left/right is reserved entirely for the Continue tab's own
-// book carousel. This means swiping on Books/Book Server/Settings currently
-// does nothing; that's intentional, not an oversight.
+// Gesture split: swipe is NOT used to move between the four tabs -- only
+// tapping the tab bar does that. Swipe left/right is reserved entirely for
+// the Continue tab's own book carousel.
 //
-// Scope of this round: Continue is fully custom-drawn -- a swipeable
-// carousel of your most recent books, neighboring covers peeking at the
-// edges, the centered one opens in the reader. Books, Book Server, and
-// Settings are still simple "tap to open" launch panels handing off to the
+// Books/Book Server/Settings: tapping the tab bar jumps straight into the
 // real, existing FileBrowserActivity / OpdsBookBrowserActivity /
-// SettingsActivity -- those screens are not yet wrapped in the tab bar
-// themselves. That's the next round, once this shell is confirmed solid.
+// SettingsActivity -- no intermediate screen. The one case that still shows
+// a "tap to open" panel is landing back on the shell after backing out of
+// one of those screens (see switchTab()'s comment for why that case is
+// deliberately NOT auto-forwarded: doing so would bounce Back straight back
+// into the screen you just left).
+//
+// Continue is fully custom-drawn: a swipeable carousel of your most recent
+// books, neighboring covers peeking at the edges. Tapping the centered cover
+// opens it directly -- no separate button.
 //
 // HomeActivity is left in the tree, untouched and simply unused: goHome() no
 // longer constructs it. Safer than deleting it while this is still unproven
@@ -41,7 +42,6 @@ class AppShellActivity final : public Activity {
       : Activity("AppShell", renderer, mappedInput), activeTab(startTab) {}
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   // Keeps the existing Home-gesture suppression in ActivityManager's loop
@@ -50,35 +50,15 @@ class AppShellActivity final : public Activity {
   bool isHomeActivity() const override { return true; }
 
  private:
-  static constexpr int TAB_BAR_HEIGHT = 64;
-  // How many recent books the Continue carousel can page through. More than
-  // this and "continue reading" stops meaning much; adjust freely.
+  static constexpr int TAB_BAR_HEIGHT = 48;  // 3/4 of the original 64px.
+  // How many recent books the Continue carousel can page through.
   static constexpr size_t MAX_CAROUSEL_BOOKS = 5;
 
   Tab activeTab;
   std::vector<RecentBook> recentBooks;  // Up to MAX_CAROUSEL_BOOKS, most recent first.
   size_t carouselIndex = 0;             // Which book is centered on the Continue tab.
 
-  // Centered cover's buffer cache -- same pattern as HomeActivity's cover
-  // tile (see storeCoverBuffer/restoreCoverBuffer there). Only the centered
-  // cover is cached; the two peeking side covers are small and redrawn fresh
-  // each time, since they're never the thing being repeatedly repainted
-  // during a swipe the way the centered one is.
-  bool coverRendered = false;
-  bool coverBufferStored = false;
-  uint8_t* coverBuffer = nullptr;
-  size_t coverBufferSize = 0;
-  int coverRectX = 0;
-  int coverRectY = 0;
-  int coverRectW = 0;
-  int coverRectH = 0;
-
   void loadRecentBooks();
-  bool storeCoverBuffer();
-  bool restoreCoverBuffer();
-  void freeCoverBuffer();
-  void invalidateCoverCache();
-
   size_t nextCarouselIndex() const;
   size_t previousCarouselIndex() const;
   void setCarouselIndex(size_t index);
@@ -87,9 +67,17 @@ class AppShellActivity final : public Activity {
   void renderTabBar(Rect rect);
   void renderContinueBody(Rect body);
   void renderLaunchPanelBody(Rect body, const char* label);
-  // Draws one of the two small, uncached side covers (no selection chrome,
-  // no caching -- see the class comment above).
-  void renderPeekCover(Rect rect, const RecentBook& book) const;
+  // Makes sure book's cover thumbnail at `height` exists on disk, generating
+  // it from the source EPUB/XTC if this is the first time it's been shown
+  // (mirrors HomeActivity::loadRecentCovers() -- that function only ever
+  // primes recentBooks[0], so anything the carousel scrolls to beyond that
+  // needs the same on-demand generation here).
+  void ensureCoverThumb(const RecentBook& book, int height) const;
+  // Draws one book's cover, aspect-fit and centered within `rect`, bordered.
+  // Falls back to a plain bordered box (never blank) if there's no cover art
+  // or it fails to load -- the title drawn separately below the cover row
+  // still identifies the book either way, so this never duplicates it.
+  void renderCoverBox(Rect rect, const RecentBook& book) const;
   // Books/Book Server/Settings only -- Continue's taps are handled inline in
   // loop() since they act on the carousel, not another top-level screen.
   void openActiveTabTarget();
