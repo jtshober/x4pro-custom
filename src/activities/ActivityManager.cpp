@@ -17,13 +17,13 @@
 #include "browser/OpdsBookBrowserActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
-#include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "network/UsbDriveActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
+#include "shell/AppShellActivity.h"
 #include "util/BmpViewerActivity.h"
 #include "util/FrontlightPanelActivity.h"
 #include "util/FullScreenMessageActivity.h"
@@ -343,6 +343,11 @@ void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::
 }
 
 void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefresh) {
+  // cleanInitialRefresh (wake-from-sleep full-refresh request) has no
+  // AppShellActivity equivalent yet -- the shell always does a normal
+  // refresh. Revisit if a HALF_REFRESH-on-wake regression shows up.
+  (void)cleanInitialRefresh;
+
   if (initialMenuItem == HomeMenuItem::NONE && currentActivity) {
     const auto& activityName = currentActivity->name;
     if (activityName == "FileBrowser") {
@@ -357,7 +362,29 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefr
       initialMenuItem = HomeMenuItem::SETTINGS_MENU;
     }
   }
-  replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, initialMenuItem, cleanInitialRefresh));
+
+  // HomeMenuItem -> starting shell tab. FILE_TRANSFER lands on Settings: File
+  // Sharing is meant to move back into Settings as part of this redesign, so
+  // route it there now even though the row itself hasn't moved yet (that's
+  // still a plain File Transfer launch via Settings for the moment).
+  AppShellActivity::Tab startTab = AppShellActivity::Tab::Continue;
+  switch (initialMenuItem) {
+    case HomeMenuItem::FILE_BROWSER:
+      startTab = AppShellActivity::Tab::Books;
+      break;
+    case HomeMenuItem::OPDS_BROWSER:
+      startTab = AppShellActivity::Tab::BookServer;
+      break;
+    case HomeMenuItem::FILE_TRANSFER:
+    case HomeMenuItem::SETTINGS_MENU:
+      startTab = AppShellActivity::Tab::Settings;
+      break;
+    case HomeMenuItem::RECENTS:
+    case HomeMenuItem::NONE:
+      startTab = AppShellActivity::Tab::Continue;
+      break;
+  }
+  replaceActivity(std::make_unique<AppShellActivity>(renderer, mappedInput, startTab));
 }
 void ActivityManager::goToCrashReport() { replaceActivity(std::make_unique<CrashActivity>(renderer, mappedInput)); }
 
