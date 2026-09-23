@@ -16,6 +16,7 @@
 #include "OpdsServerStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ContinueMetadataEnricher.h"
 
 namespace {
 // Not yet run through the localization pipeline -- English only until this
@@ -37,8 +38,9 @@ const char* tabLabel(const AppShellActivity::Tab tab) {
 
 // Largest of the sizes drawFittedTitle tries -- callers reserve layout space
 // for this regardless of which size (or how many lines) ends up used, since
-// smaller/fewer only ever needs less room, never more.
-constexpr int TITLE_MAX_FONT_ID = NOTOSANS_18_FONT_ID;
+// smaller/fewer only ever needs less room, never more. Matches the top of
+// the font ladder in drawFittedTitle below.
+constexpr int TITLE_MAX_FONT_ID = NOTOSANS_14_FONT_ID;
 // Fixed vertical gap between the title's two lines, when two are used.
 constexpr int TITLE_LINE_GAP = 6;
 
@@ -80,7 +82,10 @@ void drawCenteredLine(const GfxRenderer& renderer, const Rect body, const int fo
 // on one; truncates the second line with an ellipsis as a last resort.
 void drawFittedTitle(const GfxRenderer& renderer, const Rect body, const int blockY, const int blockHeight,
                      const std::string& title, const int maxWidth) {
-  static const int fontIds[] = {NOTOSANS_18_FONT_ID, NOTOSANS_16_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_12_FONT_ID};
+  // -30% per request: the ladder now tops out at 14 instead of 18 (and drops
+  // to 12/8 instead of 14/12) rather than scaling every size by an exact
+  // 0.7x, since those are the sizes this firmware actually has compiled in.
+  static const int fontIds[] = {NOTOSANS_14_FONT_ID, NOTOSANS_12_FONT_ID, SMALL_FONT_ID};
 
   for (const int fontId : fontIds) {
     if (renderer.getTextWidth(fontId, title.c_str()) <= maxWidth) {
@@ -102,7 +107,7 @@ void drawFittedTitle(const GfxRenderer& renderer, const Rect body, const int blo
   // Nothing fit even wrapped (an unusually long single word, most likely) --
   // one truncated line at the smallest size, vertically centered same as
   // the single-line case above.
-  const int fontId = fontIds[3];
+  const int fontId = fontIds[2];
   std::string truncated = title;
   while (!truncated.empty() && renderer.getTextWidth(fontId, (truncated + "...").c_str()) > maxWidth) {
     truncated.pop_back();
@@ -207,6 +212,13 @@ void AppShellActivity::loop() {
       openActiveTabTarget();
     }
     return;
+  }
+
+  // Cheap the overwhelming majority of the time (a single WiFi.status()
+  // check) -- see ContinueMetadataEnricher's own comment for what actually
+  // triggers a network request and why this is safe to call every frame.
+  if (activeTab == Tab::Continue && !recentBooks.empty()) {
+    ContinueMetadataEnricher::tryEnrichIfOnline(recentBooks[carouselIndex]);
   }
 
   // Swipe is reserved for the Continue carousel -- it does not switch tabs.
@@ -373,14 +385,23 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   // one -- keeps the cover from shifting vertically as you swipe between
   // books with short and long titles.
   const int titleBlockHeight = 2 * renderer.getLineHeight(TITLE_MAX_FONT_ID) + TITLE_LINE_GAP;
+  // Author gets its own single line below the title, always reserved (even
+  // for books with no author yet) so the block doesn't jump size as you
+  // swipe between books that do and don't have one.
+  constexpr int authorGap = 6;
+  const int authorLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
 
   // One shared box size for all three covers -- peeks included -- measured
   // from the centered book alone and capped so Continue never towers over
   // the rest of the screen. "Identical size" per the reference: every cover
   // in the carousel occupies this exact box, never a bigger one for the
   // center and smaller ones for its neighbors.
-  const int heightCap = std::min(UITheme::getInstance().getMetrics().homeCoverHeight,
-                                 static_cast<int>((body.height - titleGap - titleBlockHeight - titleGap) * 0.75f));
+  // +30% per request. Still can't exceed the cover's own native size (this
+  // renderer never upscales) or the available vertical room.
+  const int heightCap = static_cast<int>(
+      std::min(UITheme::getInstance().getMetrics().homeCoverHeight,
+              static_cast<int>((body.height - titleGap - titleBlockHeight - titleGap) * 0.75f)) *
+      1.3f);
   int coverWidth = 0;
   int coverHeight = 0;
   measureCoverSize(recentBooks[carouselIndex], heightCap, coverWidth, coverHeight);
@@ -392,7 +413,7 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   }
 
   const bool hasNeighbors = recentBooks.size() > 1;
-  const int blockHeight = coverHeight + titleGap + titleBlockHeight;
+  const int blockHeight = coverHeight + titleGap + titleBlockHeight + authorGap + authorLineHeight;
   const int blockY = body.y + std::max(0, (body.height - blockHeight) / 2);
   const int centerX = body.x + (body.width - coverWidth) / 2;
 
@@ -411,6 +432,19 @@ void AppShellActivity::renderContinueBody(const Rect body) {
 
   const int titleBlockY = blockY + coverHeight + titleGap;
   drawFittedTitle(renderer, body, titleBlockY, titleBlockHeight, recentBooks[carouselIndex].title, body.width - 48);
+
+  const std::string& author = recentBooks[carouselIndex].author;
+  if (!author.empty()) {
+    const int authorY = titleBlockY + titleBlockHeight + authorGap;
+    const int maxWidth = body.width - 48;
+    std::string shown = author;
+    while (!shown.empty() && renderer.getTextWidth(SMALL_FONT_ID, shown.c_str()) > maxWidth) {
+      shown.pop_back();
+    }
+    if (shown.size() < author.size()) shown += "...";
+    const int width = renderer.getTextWidth(SMALL_FONT_ID, shown.c_str());
+    renderer.drawText(SMALL_FONT_ID, body.x + std::max(0, (body.width - width) / 2), authorY, shown.c_str());
+  }
 }
 
 void AppShellActivity::render(RenderLock&&) {
