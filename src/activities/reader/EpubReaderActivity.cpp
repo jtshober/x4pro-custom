@@ -11,6 +11,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <WiFi.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -43,6 +44,7 @@
 #include "SdCardFontSystem.h"
 #include "WifiCredentialStore.h"
 #include "activities/settings/TextSettingsActivity.h"
+#include "util/ContinueMetadataEnricher.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BookmarkUtil.h"
@@ -228,9 +230,11 @@ void EpubReaderActivity::showAutoSyncToast(const char* message) {
     GUI.drawPopup(renderer, message);
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
-  // A success confirmation only needs a glance; a failure has to stay readable.
+  // A success confirmation only needs a glance; a failure has to stay
+  // readable. Shortened again (was 600ms) per request to make toasts across
+  // the app read faster -- failure duration is untouched.
   const bool isSuccess = strcmp(message, tr(STR_KOSYNC_AUTO_SUCCESS)) == 0;
-  delay(isSuccess ? 600 : 1100);
+  delay(isSuccess ? 350 : 1100);
 }
 
 namespace {
@@ -339,6 +343,25 @@ void EpubReaderActivity::attemptOpenAutoSync() {
                              [this](KOReaderAutoSync::Message msg) { showAutoSyncToast(autoSyncMessageText(msg)); });
   endSyncStatusAttempt(statusTracked, pushResult.result);
 
+  // Piggybacks the connection this sync just used (never opens one itself,
+  // matching ContinueMetadataEnricher's own rule) to catch a book that was
+  // just renamed via the File Browser's Edit option: a rename gives the
+  // book a new path, which the enricher has never attempted before, so this
+  // picks it up the moment it's next opened rather than waiting for it to
+  // show up centered on Continue. A no-op for every ordinary open where
+  // metadata already looked fine or was already attempted.
+  if (WiFi.status() == WL_CONNECTED) {
+    RecentBook currentBookInfo = RECENT_BOOKS.getDataFromBook(bookPath);
+    currentBookInfo.path = bookPath;  // Ensure this is set even if the book isn't in recents yet.
+    if (ContinueMetadataEnricher::tryEnrichIfOnline(currentBookInfo)) {
+      RenderLock lock(*this);
+      GUI.drawPopup(renderer, "Metadata updated");
+      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+      lock.unlock();
+      delay(350);  // Same fast duration as the sync success toast -- this is good news, not an error.
+      requestUpdate(true);
+    }
+  }
   // Any Success here means the server's position was actually checked and
   // reconciled (already in sync, remote applied below, or local pushed).
   openAutoSyncOk = (pushResult.result == KOReaderAutoSync::Result::Success);

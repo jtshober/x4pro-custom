@@ -40,7 +40,7 @@ const char* tabLabel(const AppShellActivity::Tab tab) {
 // for this regardless of which size (or how many lines) ends up used, since
 // smaller/fewer only ever needs less room, never more. Matches the top of
 // the font ladder in drawFittedTitle below.
-constexpr int TITLE_MAX_FONT_ID = NOTOSANS_14_FONT_ID;
+constexpr int TITLE_MAX_FONT_ID = NOTOSANS_12_FONT_ID;
 // Fixed vertical gap between the title's two lines, when two are used.
 constexpr int TITLE_LINE_GAP = 6;
 
@@ -82,10 +82,12 @@ void drawCenteredLine(const GfxRenderer& renderer, const Rect body, const int fo
 // on one; truncates the second line with an ellipsis as a last resort.
 void drawFittedTitle(const GfxRenderer& renderer, const Rect body, const int blockY, const int blockHeight,
                      const std::string& title, const int maxWidth) {
-  // -30% per request: the ladder now tops out at 14 instead of 18 (and drops
-  // to 12/8 instead of 14/12) rather than scaling every size by an exact
-  // 0.7x, since those are the sizes this firmware actually has compiled in.
-  static const int fontIds[] = {NOTOSANS_14_FONT_ID, NOTOSANS_12_FONT_ID, SMALL_FONT_ID};
+  // -30% then another ~10% per request: these are fixed, pre-baked font
+  // sizes (12/14/16/18, plus one small 8px font), not a continuously
+  // scalable typeface, so there's no exact percentage step available below
+  // 12 -- the closest real step is dropping 14 entirely and topping out at
+  // 12, which is what this does now (was 14/12/8, now 12/8).
+  static const int fontIds[] = {NOTOSANS_12_FONT_ID, SMALL_FONT_ID};
 
   for (const int fontId : fontIds) {
     if (renderer.getTextWidth(fontId, title.c_str()) <= maxWidth) {
@@ -107,7 +109,7 @@ void drawFittedTitle(const GfxRenderer& renderer, const Rect body, const int blo
   // Nothing fit even wrapped (an unusually long single word, most likely) --
   // one truncated line at the smallest size, vertically centered same as
   // the single-line case above.
-  const int fontId = fontIds[2];
+  const int fontId = fontIds[1];
   std::string truncated = title;
   while (!truncated.empty() && renderer.getTextWidth(fontId, (truncated + "...").c_str()) > maxWidth) {
     truncated.pop_back();
@@ -396,12 +398,13 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   // the rest of the screen. "Identical size" per the reference: every cover
   // in the carousel occupies this exact box, never a bigger one for the
   // center and smaller ones for its neighbors.
-  // +30% per request. Still can't exceed the cover's own native size (this
-  // renderer never upscales) or the available vertical room.
+  // +30% then another +20% per request (1.3 x 1.2 = 1.56x the original
+  // size). Still can't exceed the cover's own native size (this renderer
+  // never upscales) or the available vertical room.
   const int heightCap = static_cast<int>(
       std::min(UITheme::getInstance().getMetrics().homeCoverHeight,
               static_cast<int>((body.height - titleGap - titleBlockHeight - titleGap) * 0.75f)) *
-      1.3f);
+      1.56f);
   int coverWidth = 0;
   int coverHeight = 0;
   measureCoverSize(recentBooks[carouselIndex], heightCap, coverWidth, coverHeight);
@@ -418,9 +421,11 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   const int centerX = body.x + (body.width - coverWidth) / 2;
 
   if (hasNeighbors) {
-    // Roughly Page's peek amount: just under half of each neighbor visible,
-    // flush against the screen edge, the rest safely clipped off-canvas.
-    constexpr float visibleFraction = 0.42f;
+    // 3/4 of each neighbor visible now (was ~0.42, "half") -- flush against
+    // the screen edge, the rest safely clipped off-canvas. Tighter spacing
+    // to the center cover falls out of this automatically: more of each
+    // peek showing leaves less empty gap between it and the center.
+    constexpr float visibleFraction = 0.75f;
     const int visibleWidth = std::max(1, static_cast<int>(coverWidth * visibleFraction));
     const int leftX = body.x - (coverWidth - visibleWidth);
     const int rightX = body.x + body.width - visibleWidth;

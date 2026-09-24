@@ -260,10 +260,10 @@ std::string tryDownloadCover(const RecentBook& book, const int coverId) {
 
 namespace ContinueMetadataEnricher {
 
-void tryEnrichIfOnline(const RecentBook& book) {
-  if (WiFi.status() != WL_CONNECTED) return;  // Never opens a connection itself.
-  if (!looksLikeRawFilename(book)) return;
-  if (alreadyAttempted(book.path)) return;
+bool tryEnrichIfOnline(const RecentBook& book) {
+  if (WiFi.status() != WL_CONNECTED) return false;  // Never opens a connection itself.
+  if (!looksLikeRawFilename(book)) return false;
+  if (alreadyAttempted(book.path)) return false;
 
   // Prefer the raw filename as the search text over an already-messy title
   // field when the title itself looks like the problem (matches the
@@ -278,7 +278,7 @@ void tryEnrichIfOnline(const RecentBook& book) {
 
   if (!found) {
     LOG_DBG("META", "No confident match for: %s", query.c_str());
-    return;
+    return false;
   }
 
   // Fills in a cover that's completely missing, or replaces one that
@@ -294,6 +294,7 @@ void tryEnrichIfOnline(const RecentBook& book) {
 
   LOG_DBG("META", "Cleaned metadata: %s -> %s / %s", book.path.c_str(), cleanAuthor.c_str(), cleanTitle.c_str());
   RECENT_BOOKS.updateBook(book.path, cleanTitle, cleanAuthor, coverBmpPath);
+  return true;
 }
 
 }  // namespace ContinueMetadataEnricher

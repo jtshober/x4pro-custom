@@ -11,6 +11,8 @@
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "activities/util/FileOptionsMenuActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
@@ -274,41 +276,100 @@ void FileBrowserActivity::activateSelected(const bool forceDelete) {
   }
 
   if (mode == Mode::Books && (forceDelete || mappedInput.getHeldTime() >= GO_HOME_MS)) {
-    // --- LONG PRESS ACTION: DELETE FILE OR DIRECTORY ---
+    // --- LONG PRESS ACTION: EDIT OR DELETE ---
     std::string cleanBasePath = basepath;
     if (cleanBasePath.back() != '/') cleanBasePath += "/";
     const std::string fullPath = cleanBasePath + entry;
+    const std::string entryName = entry;  // Captured by value for the lambdas below.
+    const std::string basePathForRename = cleanBasePath;
 
-    auto handler = [this, fullPath](const ActivityResult& res) {
-      if (!res.isCancelled) {
-        LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
-        if (removeDirFile(fullPath)) {
-          LOG_DBG("FileBrowser", "Deleted successfully");
-          {
-            // buildScreen() reads the row caches on the render task; see loop().
-            RenderLock lock(*this);
-            loadFiles();
-            if (files.empty()) {
-              nav.selected = 0;
-            } else if (nav.selected >= listCount()) {
-              // Move selection to the new "last" item
-              nav.selected = listCount() - 1;
-            }
-            nav.follow(listCount());
+    startActivityForResult(
+        std::make_unique<FileOptionsMenuActivity>(renderer, mappedInput, entryName),
+        [this, fullPath, entryName, basePathForRename](const ActivityResult& menuRes) {
+          if (menuRes.isCancelled) return;
+          const int action = std::get<MenuResult>(menuRes.data).action;
+
+          if (action == FileOptionsMenuActivity::DELETE) {
+            auto handler = [this, fullPath](const ActivityResult& res) {
+              if (!res.isCancelled) {
+                LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
+                if (removeDirFile(fullPath)) {
+                  LOG_DBG("FileBrowser", "Deleted successfully");
+                  {
+                    // buildScreen() reads the row caches on the render task; see loop().
+                    RenderLock lock(*this);
+                    loadFiles();
+                    if (files.empty()) {
+                      nav.selected = 0;
+                    } else if (nav.selected >= listCount()) {
+                      // Move selection to the new "last" item
+                      nav.selected = listCount() - 1;
+                    }
+                    nav.follow(listCount());
+                  }
+
+                  requestUpdate(true);
+                } else {
+                  LOG_ERR("FileBrowser", "Failed to delete: %s", fullPath.c_str());
+                }
+              } else {
+                LOG_DBG("FileBrowser", "Delete cancelled by user");
+              }
+            };
+
+            std::string heading = tr(STR_DELETE) + std::string("? ");
+            startActivityForResult(
+                std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entryName), handler);
+            return;
           }
 
-          requestUpdate(true);
-        } else {
-          LOG_ERR("FileBrowser", "Failed to delete: %s", fullPath.c_str());
-        }
-      } else {
-        LOG_DBG("FileBrowser", "Delete cancelled by user");
-      }
-    };
+          if (action == FileOptionsMenuActivity::EDIT) {
+            startActivityForResult(
+                std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, "Edit Filename", entryName,
+                                                        /*maxLength=*/120, InputType::Text),
+                [this, entryName, basePathForRename, fullPath](const ActivityResult& editRes) {
+                  if (editRes.isCancelled) return;
+                  std::string newName = std::get<KeyboardResult>(editRes.data).text;
+                  // Trim trailing/leading whitespace a touch keyboard can
+                  // easily leave behind.
+                  while (!newName.empty() && newName.front() == ' ') newName.erase(newName.begin());
+                  while (!newName.empty() && newName.back() == ' ') newName.pop_back();
+                  if (newName.empty() || newName == entryName) return;
 
-    std::string heading = tr(STR_DELETE) + std::string("? ");
+                  // Keep the original extension even if the edit dropped it
+                  // -- an EPUB without its extension stops being openable.
+                  const size_t origDot = entryName.find_last_of('.');
+                  if (origDot != std::string::npos) {
+                    const std::string origExt = entryName.substr(origDot);
+                    if (newName.size() < origExt.size() ||
+                        newName.compare(newName.size() - origExt.size(), origExt.size(), origExt) != 0) {
+                      newName += origExt;
+                    }
+                  }
 
-    startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
+                  const std::string newFullPath = basePathForRename + newName;
+                  LOG_DBG("FileBrowser", "Renaming %s -> %s", fullPath.c_str(), newName.c_str());
+                  if (!Storage.rename(fullPath.c_str(), newFullPath.c_str())) {
+                    LOG_ERR("FileBrowser", "Rename failed: %s -> %s", fullPath.c_str(), newFullPath.c_str());
+                    return;
+                  }
+                  // The renamed book's recents entry, if any, is left as-is:
+                  // it now points at a path that no longer exists, which
+                  // RecentBooksStore::isMissing() already treats as "skip
+                  // this one" everywhere it's read. Opening the file under
+                  // its new name adds a fresh entry, same as opening any
+                  // other book for the first time.
+                  {
+                    // buildScreen() reads the row caches on the render task; see loop().
+                    RenderLock lock(*this);
+                    loadFiles();
+                    nav.selected = static_cast<int>(findEntry(newName));
+                    nav.follow(listCount());
+                  }
+                  requestUpdate(true);
+                });
+          }
+        });
     return;
   } else {
     // --- SHORT PRESS ACTION: OPEN/NAVIGATE ---

@@ -32,6 +32,12 @@ namespace ContinueMetadataEnricher {
 // already connected, this book hasn't been attempted before, and its
 // current title/author look like they came from a filename rather than
 // real metadata.
-void tryEnrichIfOnline(const RecentBook& book);
+//
+// Returns true if it actually rewrote the book's entry in RecentBooksStore
+// (a confident match was found) -- false in every other case, including
+// every early skip. A caller that wants to tell the person something
+// changed (a brief "Metadata updated" toast, say) should key off this
+// return value rather than assuming a call always does something.
+bool tryEnrichIfOnline(const RecentBook& book);
 
 }  // namespace ContinueMetadataEnricher
