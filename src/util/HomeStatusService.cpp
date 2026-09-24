@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "CrossPointSettings.h"
 #include "WeatherLocationStore.h"
 #include "WifiCredentialStore.h"
 #include "fontIds.h"
@@ -36,10 +37,22 @@ constexpr size_t MAX_NETWORKS_TRIED = 2;
 // TLS handshakes on for this hardware's wolfSSL stack.
 constexpr uint32_t MIN_FREE_FOR_TLS = 35000;
 constexpr uint32_t MIN_BLOCK_FOR_TLS = 20000;
+// A failed connect/fetch attempt backs off for this long before tick() will
+// try again at all -- without this, a device that's out of WiFi range (or
+// simply has no saved network yet) would otherwise re-run
+// ensureWifiConnected()'s full WiFi.begin()-and-poll loop every
+// TICK_MIN_GAP_MS forever, hammering the radio continuously. That's exactly
+// what produced a hard freeze needing a power-cycle in testing: repeated
+// WiFi.begin() calls with no disconnect or cooldown between them wedged the
+// WiFi/TLS stack until the watchdog reset the board, which booted straight
+// back into the same runaway retry loop.
+constexpr uint32_t RETRY_BACKOFF_MS = 5UL * 60 * 1000;
 
 uint32_t lastTickMs = 0;
 uint32_t lastWeatherFetchMs = 0;
 uint32_t lastClockSyncMs = 0;
+uint32_t lastFailedAttemptMs = 0;
+bool hadFailedAttempt = false;
 bool clockSynced = false;
 bool weatherValid = false;
 int cachedTempF = 0;
@@ -154,6 +167,11 @@ bool ensureWifiConnected() {
   if (toTry.empty()) return false;
 
   for (const auto& network : toTry) {
+    // Fully tear down any previous attempt before starting the next one --
+    // stacking WiFi.begin() calls without an intervening disconnect is the
+    // specific pattern that wedged the WiFi stack during testing.
+    WiFi.disconnect(true, true);
+    delay(100);
     WiFi.mode(WIFI_STA);
     WiFi.begin(network.first.c_str(), network.second.empty() ? nullptr : network.second.c_str());
     const uint32_t start = millis();
@@ -165,6 +183,10 @@ bool ensureWifiConnected() {
       return true;
     }
   }
+  // Every attempt failed -- leave the radio fully disconnected rather than
+  // mid-association, so whatever runs next (including the next tick's own
+  // attempt, after backing off) starts clean.
+  WiFi.disconnect(true, true);
   return false;
 }
 
@@ -248,24 +270,58 @@ void tick() {
   if (lastTickMs != 0 && now - lastTickMs < TICK_MIN_GAP_MS) return;
   lastTickMs = now;
 
+  // A previous attempt failed -- back off rather than immediately retrying.
+  // This is what stops a device with no saved WiFi (or one that's briefly
+  // out of range) from turning into a runaway reconnect loop every
+  // TICK_MIN_GAP_MS -- the exact pattern that wedged the WiFi stack and
+  // froze the device during testing.
+  if (hadFailedAttempt && (now - lastFailedAttemptMs < RETRY_BACKOFF_MS)) return;
+
+  // The clock is independent of weather -- it needs only an NTP sync, and
+  // falls back to the manually-configured Settings > Weather Location >
+  // Set Time Zone offset for its UTC offset whenever a fresh weather fetch
+  // hasn't supplied a better (DST-aware) one. So it keeps trying to sync on
+  // its own schedule even with no weather location configured at all.
+  // Weather itself still only bothers when a location is set.
   const bool clockDue = !clockSynced || (now - lastClockSyncMs > CLOCK_RESYNC_INTERVAL_MS);
   const bool weatherDue =
       WEATHER_LOCATION.hasLocation() && (!weatherValid || (now - lastWeatherFetchMs > WEATHER_REFRESH_INTERVAL_MS));
   if (!clockDue && !weatherDue) return;
 
-  if (!ensureWifiConnected()) return;  // Try again next tick; nothing to report anywhere for this.
+  if (!ensureWifiConnected()) {
+    hadFailedAttempt = true;
+    lastFailedAttemptMs = now;
+    return;
+  }
 
-  if (clockDue) trySyncClock();
-  if (weatherDue) tryFetchWeather();
+  bool ok = true;
+  if (clockDue) ok = trySyncClock() && ok;
+  if (weatherDue) ok = tryFetchWeather() && ok;
+  hadFailedAttempt = !ok;
+  if (hadFailedAttempt) lastFailedAttemptMs = now;
 }
 
-bool isReady() { return clockSynced && weatherValid; }
+bool isReady() { return clockSynced; }
+
+namespace {
+// Whatever UTC offset the clock should display with right now: a fresh
+// weather fetch is authoritative when there is one (DST-correct, resolved
+// from the actual configured location); otherwise the manually-set
+// Settings > Weather Location > Set Time Zone offset, the same
+// quarter-hour-steps-biased-by-48 encoding the X3 status-bar clock already
+// uses (ClockOffsetActivity), reused here rather than inventing a second
+// timezone setting. Defaults to UTC+0 (biased value 48) until set.
+long currentUtcOffsetSeconds() {
+  if (weatherValid) return cachedUtcOffsetSeconds;
+  return (static_cast<long>(SETTINGS.clockUtcOffsetQ) - 48) * 15 * 60;
+}
+}  // namespace
 
 bool getStatusLineText(std::string& out) {
-  if (!isReady()) return false;
+  if (!clockSynced) return false;
 
   const time_t nowUtc = time(nullptr);
-  const time_t localT = nowUtc + cachedUtcOffsetSeconds;
+  const time_t localT = nowUtc + currentUtcOffsetSeconds();
   struct tm tmLocal;
   gmtime_r(&localT, &tmLocal);
   char timeBuf[16];
@@ -274,6 +330,14 @@ bool getStatusLineText(std::string& out) {
   // No leading zero on the hour ("2:45 PM", not "02:45 PM") -- matches how
   // a phone's own status bar clock reads.
   if (timeText.size() > 1 && timeText.front() == '0') timeText.erase(timeText.begin());
+
+  // Weather only when a fresh fetch has actually supplied one -- the clock
+  // above shows on its own otherwise, per how this was asked to behave:
+  // weather when reachable, always at least the clock when it isn't.
+  if (!weatherValid) {
+    out = timeText;
+    return true;
+  }
 
   // Degree sign (U+00B0): the builtin fonts here are generated from iA
   // Writer Mono S's own glyph set with no codepoint restriction, which

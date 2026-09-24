@@ -2,6 +2,9 @@
 
 #include <HalDisplay.h>
 
+#include <vector>
+
+#include "ClockOffsetActivity.h"
 #include "WeatherLocationStore.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
@@ -31,25 +34,39 @@ void WeatherLocationActivity::onEnter() {
   const int maxWidth = renderer.getScreenWidth() - 80;
   title = renderer.truncatedText(UI_10_FONT_ID, title.c_str(), maxWidth, EpdFontFamily::BOLD);
 
-  static const char* optionsWithClear[] = {"Type a Location", "Use Current Location", "Turn Off Weather"};
-  static const char* optionsNoClear[] = {"Type a Location", "Use Current Location"};
+  // "Set Time Zone" is always offered, independent of whether weather is
+  // configured: the clock (Continue/Books/Book Server/Settings title bar)
+  // works off NTP + this offset on its own, and only prefers a fresh
+  // weather fetch's own (DST-aware) offset when one is available. This is
+  // what keeps the clock showing even with weather unreachable or unset.
+  static const std::vector<std::string> options = {"Type a Location", "Use Current Location",
+                                                    "Set Time Zone (for offline clock)"};
+  std::vector<std::string> shownOptions = options;
+  if (hasLocation) shownOptions.push_back("Turn Off Weather");
+  std::vector<const char*> optionPtrs;
+  optionPtrs.reserve(shownOptions.size());
+  for (const auto& opt : shownOptions) optionPtrs.push_back(opt.c_str());
 
-  menu.show(title.c_str(), hasLocation ? optionsWithClear : optionsNoClear, hasLocation ? 3 : 2, 0,
-            [this](const int idx) {
-              if (idx == 0) {
-                handleTypeLocation();
-              } else if (idx == 1) {
-                handleUseCurrentLocation();
-              } else {
-                // "Turn Off Weather" -- only reachable when hasLocation was
-                // true, so index 2 always means this option.
-                WEATHER_LOCATION.clearLocation();
-                ActivityResult res;
-                res.isCancelled = false;
-                setResult(std::move(res));
-                finish();
-              }
-            });
+  menu.show(title.c_str(), optionPtrs.data(), static_cast<int>(optionPtrs.size()), 0, [this](const int idx) {
+    if (idx == 0) {
+      handleTypeLocation();
+    } else if (idx == 1) {
+      handleUseCurrentLocation();
+    } else if (idx == 2) {
+      // Reuses the same offset the X3 status-bar clock stores
+      // (SETTINGS.clockUtcOffsetQ) -- one timezone setting, not two.
+      startActivityForResult(std::make_unique<ClockOffsetActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) { finish(); });
+    } else {
+      // "Turn Off Weather" -- only reachable when hasLocation was true, so
+      // index 3 always means this option.
+      WEATHER_LOCATION.clearLocation();
+      ActivityResult res;
+      res.isCancelled = false;
+      setResult(std::move(res));
+      finish();
+    }
+  });
 
   requestUpdate(true);
 }

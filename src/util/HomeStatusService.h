@@ -40,17 +40,20 @@ namespace HomeStatusService {
 // same pattern as ContinueMetadataEnricher::tryEnrichIfOnline().
 void tick();
 
-// True once the clock has been NTP-synced at least once this boot AND at
-// least one weather fetch has supplied a UTC offset for the configured
-// location. The two are deliberately linked (see the .cpp): there is no
-// "clock only" state, so the title bar never shows a plausible-looking but
-// silently-wrong time.
+// True once the clock has been NTP-synced at least once this boot. The
+// clock and weather are independent: the clock shows as soon as it has a
+// time and SOME UTC offset (a fresh weather fetch's if there is one, else
+// the manually-set Settings > Weather Location > Set Time Zone offset --
+// see the .cpp), and weather rides alongside it only when a location is
+// configured and actually reachable.
 bool isReady();
 
-// "2:45 PM | Mostly Cloudy, 72°" -- exactly as it should appear in the
-// title bar. Returns false (leaving out untouched) if isReady() is false.
-// The temperature is always Fahrenheit and never carries a trailing unit
-// letter, per how this was asked to be shown.
+// "2:45 PM | Mostly Cloudy, 72°" when weather is available, or just
+// "2:45 PM" when it isn't (no location configured, or the last fetch
+// failed) -- the clock always shows on its own once isReady() is true.
+// Returns false (leaving out untouched) only if the clock itself has never
+// synced. The temperature is always Fahrenheit and never carries a
+// trailing unit letter, per how this was asked to be shown.
 bool getStatusLineText(std::string& out);
 
 // Draws the status line (see getStatusLineText) at (x, y) in SMALL_FONT_ID
