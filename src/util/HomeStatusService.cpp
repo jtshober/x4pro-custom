@@ -37,22 +37,10 @@ constexpr size_t MAX_NETWORKS_TRIED = 2;
 // TLS handshakes on for this hardware's wolfSSL stack.
 constexpr uint32_t MIN_FREE_FOR_TLS = 35000;
 constexpr uint32_t MIN_BLOCK_FOR_TLS = 20000;
-// A failed connect/fetch attempt backs off for this long before tick() will
-// try again at all -- without this, a device that's out of WiFi range (or
-// simply has no saved network yet) would otherwise re-run
-// ensureWifiConnected()'s full WiFi.begin()-and-poll loop every
-// TICK_MIN_GAP_MS forever, hammering the radio continuously. That's exactly
-// what produced a hard freeze needing a power-cycle in testing: repeated
-// WiFi.begin() calls with no disconnect or cooldown between them wedged the
-// WiFi/TLS stack until the watchdog reset the board, which booted straight
-// back into the same runaway retry loop.
-constexpr uint32_t RETRY_BACKOFF_MS = 5UL * 60 * 1000;
 
 uint32_t lastTickMs = 0;
 uint32_t lastWeatherFetchMs = 0;
 uint32_t lastClockSyncMs = 0;
-uint32_t lastFailedAttemptMs = 0;
-bool hadFailedAttempt = false;
 bool clockSynced = false;
 bool weatherValid = false;
 int cachedTempF = 0;
@@ -142,11 +130,23 @@ std::string urlEncode(const std::string& s) {
 
 // Tries each saved network in turn (last-connected first), a bounded
 // WIFI_CONNECT_TIMEOUT_MS each, up to MAX_NETWORKS_TRIED networks. No-op and
-// returns true immediately if something else already has WiFi up. Returns
-// false, quietly, if nothing is in range or no networks are saved at all --
-// tick() just tries again next interval; this never surfaces an error
-// anywhere, unlike an explicit user-initiated connect.
-bool ensureWifiConnected() {
+// returns true immediately if something else already has WiFi up.
+//
+// Only ever called from an explicit, user-initiated action
+// (geocodeLocation()/locateByIp(), triggered from Settings > Weather
+// Location, which already shows a "Looking up..."/"Detecting..." toast) --
+// NEVER from tick()'s own background refresh. An earlier version of this
+// file called this from tick() on every idle cycle of the home screen
+// whenever the clock hadn't synced yet, and on a flaky WiFi network that
+// meant a 10-20 second UI freeze recurring every few minutes forever (every
+// button press, tap and screen render stalls for as long as this blocking
+// connect-and-poll loop runs). tick() now only ever piggybacks a connection
+// something else already opened (see wifiAlreadyConnected() below) -- the
+// same rule ContinueMetadataEnricher already follows for exactly this
+// reason -- and this function stays reserved for the one case where
+// blocking is actually expected: the person just tapped something and is
+// watching a wait message.
+bool ensureWifiConnectedActive() {
   if (WiFi.status() == WL_CONNECTED) return true;
   if (insufficientHeap()) return false;
 
@@ -184,11 +184,17 @@ bool ensureWifiConnected() {
     }
   }
   // Every attempt failed -- leave the radio fully disconnected rather than
-  // mid-association, so whatever runs next (including the next tick's own
-  // attempt, after backing off) starts clean.
+  // mid-association, so whatever runs next starts clean.
   WiFi.disconnect(true, true);
   return false;
 }
+
+// The ONLY WiFi check tick() itself makes: is a connection already up for
+// some other reason (reading a book that triggered a KOSync push, metadata
+// cleanup, File Transfer, or Settings > Weather Location having just run
+// its own explicit connect). Never opens one -- a plain status check, so
+// this can never block or stall anything.
+bool wifiAlreadyConnected() { return WiFi.status() == WL_CONNECTED; }
 
 bool trySyncClock() {
   // UTC epoch only -- local time is derived at display time using whatever
@@ -270,35 +276,20 @@ void tick() {
   if (lastTickMs != 0 && now - lastTickMs < TICK_MIN_GAP_MS) return;
   lastTickMs = now;
 
-  // A previous attempt failed -- back off rather than immediately retrying.
-  // This is what stops a device with no saved WiFi (or one that's briefly
-  // out of range) from turning into a runaway reconnect loop every
-  // TICK_MIN_GAP_MS -- the exact pattern that wedged the WiFi stack and
-  // froze the device during testing.
-  if (hadFailedAttempt && (now - lastFailedAttemptMs < RETRY_BACKOFF_MS)) return;
+  // Piggyback only -- see wifiAlreadyConnected()'s comment. This is what
+  // makes tick() safe to call every frame from the home screen's loop():
+  // when nothing else has WiFi up, this is one status flag read and tick()
+  // returns immediately, no matter how often or how long the clock/weather
+  // have been waiting to sync.
+  if (!wifiAlreadyConnected()) return;
 
-  // The clock is independent of weather -- it needs only an NTP sync, and
-  // falls back to the manually-configured Settings > Weather Location >
-  // Set Time Zone offset for its UTC offset whenever a fresh weather fetch
-  // hasn't supplied a better (DST-aware) one. So it keeps trying to sync on
-  // its own schedule even with no weather location configured at all.
-  // Weather itself still only bothers when a location is set.
   const bool clockDue = !clockSynced || (now - lastClockSyncMs > CLOCK_RESYNC_INTERVAL_MS);
   const bool weatherDue =
       WEATHER_LOCATION.hasLocation() && (!weatherValid || (now - lastWeatherFetchMs > WEATHER_REFRESH_INTERVAL_MS));
   if (!clockDue && !weatherDue) return;
 
-  if (!ensureWifiConnected()) {
-    hadFailedAttempt = true;
-    lastFailedAttemptMs = now;
-    return;
-  }
-
-  bool ok = true;
-  if (clockDue) ok = trySyncClock() && ok;
-  if (weatherDue) ok = tryFetchWeather() && ok;
-  hadFailedAttempt = !ok;
-  if (hadFailedAttempt) lastFailedAttemptMs = now;
+  if (clockDue) trySyncClock();
+  if (weatherDue) tryFetchWeather();
 }
 
 bool isReady() { return clockSynced; }
@@ -348,6 +339,20 @@ bool getStatusLineText(std::string& out) {
   return true;
 }
 
+bool clockMinuteChanged() {
+  if (!clockSynced) return false;
+  // Purely local: time(), a division and a comparison -- no network, no
+  // storage I/O, nothing that could ever repeat the earlier problems. Bounds
+  // itself to firing at most once per real-world minute rollover.
+  static long lastMinuteBucket = -1;
+  const time_t nowUtc = time(nullptr);
+  const time_t localT = nowUtc + currentUtcOffsetSeconds();
+  const long minuteBucket = static_cast<long>(localT / 60);
+  if (minuteBucket == lastMinuteBucket) return false;
+  lastMinuteBucket = minuteBucket;
+  return true;
+}
+
 void drawTitleBarStatus(const GfxRenderer& renderer, const int x, const int y, const bool rightAligned) {
   std::string text;
   if (!getStatusLineText(text)) return;
@@ -357,8 +362,12 @@ void drawTitleBarStatus(const GfxRenderer& renderer, const int x, const int y, c
 
 bool geocodeLocation(const std::string& query, std::string& outName, double& outLat, double& outLon) {
   if (query.empty()) return false;
-  if (!ensureWifiConnected()) return false;
+  if (!ensureWifiConnectedActive()) return false;
   if (insufficientHeap()) return false;
+  // Piggyback the clock sync onto this connection while it's open -- gets
+  // the title-bar clock working immediately after setting up a location,
+  // rather than waiting for tick() to next happen to see WiFi already up.
+  if (!clockSynced) trySyncClock();
 
   const std::string url =
       "https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name=" + urlEncode(query);
@@ -400,8 +409,9 @@ bool geocodeLocation(const std::string& query, std::string& outName, double& out
 }
 
 bool locateByIp(std::string& outName, double& outLat, double& outLon) {
-  if (!ensureWifiConnected()) return false;
+  if (!ensureWifiConnectedActive()) return false;
   if (insufficientHeap()) return false;
+  if (!clockSynced) trySyncClock();
 
   freeink::SecureHttpClient http;
   http.setInsecure();

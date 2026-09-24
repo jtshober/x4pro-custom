@@ -56,6 +56,17 @@ bool isReady();
 // trailing unit letter, per how this was asked to be shown.
 bool getStatusLineText(std::string& out);
 
+// True at most once per real-world minute rollover (and only once the
+// clock has synced) -- purely a local time() check, no network, no SD
+// access. Meant to be called from the shell's own loop() so it can trigger
+// a plain requestUpdate() when this returns true: a cheap, already-cached
+// repaint (the same FAST_REFRESH pass a tab switch already does) is enough
+// to keep the visible clock accurate to the minute even while the person
+// isn't touching anything, without ever polling WiFi or doing real work on
+// a timer. Returns false on every other call, so calling it every frame
+// costs nothing beyond the occasional true.
+bool clockMinuteChanged();
+
 // Draws the status line (see getStatusLineText) at (x, y) in SMALL_FONT_ID
 // -- the same font the header already uses for the battery percentage and
 // the reader status bar's own clock, so this reads as the same family of

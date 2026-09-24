@@ -192,6 +192,14 @@ void AppShellActivity::loop() {
   // four tabs, so it needs refreshing regardless of which one is active.
   HomeStatusService::tick();
 
+  // Ticks the visible clock forward once a minute on its own -- purely a
+  // local time check (see HomeStatusService's comment), never WiFi -- so it
+  // stays accurate to the minute while sitting idle on the shell, not just
+  // whenever some other event happens to redraw the header anyway.
+  if (HomeStatusService::clockMinuteChanged()) {
+    requestUpdate();
+  }
+
   int tx = 0;
   int ty = 0;
   if (mappedInput.wasScreenTapped(tx, ty)) {
