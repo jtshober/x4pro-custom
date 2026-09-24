@@ -83,6 +83,7 @@ void SettingsActivity::rebuildSettingsLists() {
     controlsSettings.insert(controlsSettings.begin(),
                             SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
   }
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_FILE_TRANSFER, SettingAction::FileTransfer));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
@@ -333,6 +334,11 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::OPDSBrowser:
         startActivityForResult(std::make_unique<OpdsServerListActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::FileTransfer:
+        // Not a sub-Activity like the others here -- goes straight to the
+        // shell's existing File Transfer flow, same call Home used to make.
+        activityManager.goToFileTransfer();
         break;
       case SettingAction::Network:
         startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, false), resultHandler);
