@@ -110,6 +110,13 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   if (keyboardLayouts != 0) {
     doc["keyboardLayouts"] = keyboardLayouts;
   }
+
+  // Last successful HomeStatusService clock sync (uint32_t, so it doesn't fit
+  // the uint8_t generic loop either). Omitted while never synced, same
+  // "absent means default" convention as keyboardLayouts above.
+  if (lastSyncedEpoch != 0) {
+    doc["lastSyncedEpoch"] = lastSyncedEpoch;
+  }
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -231,6 +238,11 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Absent means unconfigured, which is the default.
   if (doc["keyboardLayouts"].is<uint16_t>()) {
     keyboardLayouts = doc["keyboardLayouts"].as<uint16_t>();
+  }
+
+  // Absent means never synced, which is the default (0).
+  if (doc["lastSyncedEpoch"].is<uint32_t>()) {
+    lastSyncedEpoch = doc["lastSyncedEpoch"].as<uint32_t>();
   }
 
   if (needsResave) {

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <ctime>
 #include <string>
+#include <sys/time.h>
 #include <vector>
 
 #include "CrossPointSettings.h"
@@ -42,10 +43,18 @@ uint32_t lastTickMs = 0;
 uint32_t lastWeatherFetchMs = 0;
 uint32_t lastClockSyncMs = 0;
 bool clockSynced = false;
+// True once tick() has seeded the in-memory clock from
+// CrossPointSettings::lastSyncedEpoch at the start of this boot, and still
+// true until a real sync (trySyncClock() succeeding) supersedes it. See
+// seedClockFromPersisted() and HomeStatusService.h's header comment.
+bool clockSeededFromPersisted = false;
 bool weatherValid = false;
 int cachedTempF = 0;
 std::string cachedCondition;
 long cachedUtcOffsetSeconds = 0;
+// Gates refreshLocationAndClockOnce() to a single attempt per boot,
+// regardless of outcome -- see that function and wouldAttemptBootRefresh().
+bool bootLocationRefreshAttempted = false;
 
 bool insufficientHeap() {
   return ESP.getFreeHeap() < MIN_FREE_FOR_TLS || ESP.getMaxAllocHeap() < MIN_BLOCK_FOR_TLS;
@@ -132,20 +141,22 @@ std::string urlEncode(const std::string& s) {
 // WIFI_CONNECT_TIMEOUT_MS each, up to MAX_NETWORKS_TRIED networks. No-op and
 // returns true immediately if something else already has WiFi up.
 //
-// Only ever called from an explicit, user-initiated action
-// (geocodeLocation()/locateByIp(), triggered from Settings > Weather
-// Location, which already shows a "Looking up..."/"Detecting..." toast) --
-// NEVER from tick()'s own background refresh. An earlier version of this
-// file called this from tick() on every idle cycle of the home screen
-// whenever the clock hadn't synced yet, and on a flaky WiFi network that
-// meant a 10-20 second UI freeze recurring every few minutes forever (every
-// button press, tap and screen render stalls for as long as this blocking
-// connect-and-poll loop runs). tick() now only ever piggybacks a connection
-// something else already opened (see wifiAlreadyConnected() below) -- the
-// same rule ContinueMetadataEnricher already follows for exactly this
-// reason -- and this function stays reserved for the one case where
-// blocking is actually expected: the person just tapped something and is
-// watching a wait message.
+// Called from an explicit, user-initiated action (geocodeLocation()/
+// locateByIp(), triggered from Settings > Weather Location, or from
+// refreshLocationAndClockOnce()'s own one-time-per-boot call into
+// locateByIp()) -- NEVER from tick()'s own background refresh. An earlier
+// version of this file called this from tick() on every idle cycle of the
+// home screen whenever the clock hadn't synced yet, and on a flaky WiFi
+// network that meant a 10-20 second UI freeze recurring every few minutes
+// forever (every button press, tap and screen render stalls for as long as
+// this blocking connect-and-poll loop runs). tick() now only ever
+// piggybacks a connection something else already opened (see
+// wifiAlreadyConnected() below) -- the same rule ContinueMetadataEnricher
+// already follows for exactly this reason -- and this function stays
+// reserved for the handful of cases where blocking is actually expected:
+// the person just tapped something (with a "Looking up..."/"Detecting..."
+// toast already up), or the one-time boot refresh (with its own toast up
+// before this ever runs -- see AppShellActivity::switchTab()).
 bool ensureWifiConnectedActive() {
   if (WiFi.status() == WL_CONNECTED) return true;
   if (insufficientHeap()) return false;
@@ -203,8 +214,32 @@ bool trySyncClock() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo, 5000)) return false;
   clockSynced = true;
+  // A real sync always supersedes a boot-time guess, whether or not one was
+  // ever made this boot.
+  clockSeededFromPersisted = false;
   lastClockSyncMs = millis();
+
+  // Persist so the NEXT boot can seed the clock immediately from this,
+  // instead of showing nothing until network happens again -- see
+  // seedClockFromPersisted() below and HomeStatusService.h's header comment.
+  SETTINGS.lastSyncedEpoch = static_cast<uint32_t>(time(nullptr));
+  SETTINGS.saveToFile();
   return true;
+}
+
+// Runs once, at the very start of the first tick() this boot. A no-op if
+// there's nothing persisted yet (fresh install, or a full battery-dead /
+// hard-reset that lost CrossPointSettings along with everything else -- see
+// this file's header comment), or if a real sync has already happened this
+// boot by the time this runs.
+void seedClockFromPersisted() {
+  if (clockSynced || clockSeededFromPersisted) return;
+  if (SETTINGS.lastSyncedEpoch == 0) return;
+  struct timeval tv {};
+  tv.tv_sec = static_cast<time_t>(SETTINGS.lastSyncedEpoch);
+  tv.tv_usec = 0;
+  settimeofday(&tv, nullptr);
+  clockSeededFromPersisted = true;
 }
 
 // One GET against Open-Meteo's forecast endpoint for the configured
@@ -265,11 +300,15 @@ void tick() {
   // loadFromFile() before hasLocation()/getLocationName() reflect it. Done
   // once per boot here, the very first time anything asks this service to
   // do work, so it's correct regardless of whether Continue or Settings >
-  // Weather Location happens to be visited first this session.
-  static bool locationLoaded = false;
-  if (!locationLoaded) {
+  // Weather Location happens to be visited first this session. The clock's
+  // own boot-time seed (see seedClockFromPersisted()) piggybacks on this
+  // same one-time gate -- neither needs network, so both run immediately on
+  // the very first call, not just once WiFi shows up.
+  static bool bootInitDone = false;
+  if (!bootInitDone) {
+    bootInitDone = true;
     WEATHER_LOCATION.loadFromFile();
-    locationLoaded = true;
+    seedClockFromPersisted();
   }
 
   const uint32_t now = millis();
@@ -292,7 +331,7 @@ void tick() {
   if (weatherDue) tryFetchWeather();
 }
 
-bool isReady() { return clockSynced; }
+bool isReady() { return clockSynced || clockSeededFromPersisted; }
 
 namespace {
 // Whatever UTC offset the clock should display with right now: a fresh
@@ -301,7 +340,12 @@ namespace {
 // Settings > Weather Location > Set Time Zone offset, the same
 // quarter-hour-steps-biased-by-48 encoding the X3 status-bar clock already
 // uses (ClockOffsetActivity), reused here rather than inventing a second
-// timezone setting. Defaults to UTC+0 (biased value 48) until set.
+// timezone setting. Defaults to UTC+0 (biased value 48) until set. Note
+// this means weatherValid (always false at the start of a boot, until a
+// fetch actually succeeds) is what decides the offset, not clockSynced /
+// clockSeededFromPersisted -- so a freshly booted, seeded-but-not-yet-synced
+// clock still shows in the manually configured zone, exactly like a boot
+// with no persisted time at all.
 long currentUtcOffsetSeconds() {
   if (weatherValid) return cachedUtcOffsetSeconds;
   return (static_cast<long>(SETTINGS.clockUtcOffsetQ) - 48) * 15 * 60;
@@ -309,7 +353,7 @@ long currentUtcOffsetSeconds() {
 }  // namespace
 
 bool getStatusLineText(std::string& out) {
-  if (!clockSynced) return false;
+  if (!clockSynced && !clockSeededFromPersisted) return false;
 
   const time_t nowUtc = time(nullptr);
   const time_t localT = nowUtc + currentUtcOffsetSeconds();
@@ -340,7 +384,7 @@ bool getStatusLineText(std::string& out) {
 }
 
 bool clockMinuteChanged() {
-  if (!clockSynced) return false;
+  if (!clockSynced && !clockSeededFromPersisted) return false;
   // Purely local: time(), a division and a comparison -- no network, no
   // storage I/O, nothing that could ever repeat the earlier problems. Bounds
   // itself to firing at most once per real-world minute rollover.
@@ -442,6 +486,30 @@ bool locateByIp(std::string& outName, double& outLat, double& outLon) {
   outLat = doc["latitude"].as<double>();
   outLon = doc["longitude"].as<double>();
   return true;
+}
+
+bool wouldAttemptBootRefresh() { return !bootLocationRefreshAttempted && !WEATHER_LOCATION.isManualLocation(); }
+
+void refreshLocationAndClockOnce() {
+  if (bootLocationRefreshAttempted) return;
+  bootLocationRefreshAttempted = true;
+
+  // Never silently override a location the person typed in themselves --
+  // see WeatherLocationStore::isManualLocation()'s comment.
+  if (WEATHER_LOCATION.isManualLocation()) return;
+
+  std::string name;
+  double lat = 0.0, lon = 0.0;
+  // locateByIp() opens WiFi itself (bounded the same way as everywhere else
+  // in this file) and, as a side effect, syncs the clock too if it wasn't
+  // already synced this boot.
+  if (locateByIp(name, lat, lon)) {
+    WEATHER_LOCATION.setLocation(name, lat, lon, /*isManual=*/false);
+    tryFetchWeather();
+  }
+  // A failed lookup leaves whatever location (if any) was already stored
+  // untouched -- same behavior as a failed "Use Current Location" in
+  // Settings -- and this still won't be retried again until next boot.
 }
 
 }  // namespace HomeStatusService

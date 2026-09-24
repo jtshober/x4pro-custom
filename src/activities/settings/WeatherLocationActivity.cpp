@@ -122,10 +122,13 @@ void WeatherLocationActivity::handleTypeLocation() {
         std::string name;
         double lat = 0.0, lon = 0.0;
         if (HomeStatusService::geocodeLocation(query, name, lat, lon)) {
-          WEATHER_LOCATION.setLocation(name, lat, lon);
-          showToast(("Location set: " + name).c_str(), true);
+          // Typed in by hand -- marked Manual so HomeStatusService's own
+          // once-per-boot auto-refresh (see refreshLocationAndClockOnce())
+          // never silently overwrites it with an IP-based guess later.
+          WEATHER_LOCATION.setLocation(name, lat, lon, /*isManual=*/true);
+          showToast(("Location: " + name).c_str(), true);
         } else {
-          showToast("Couldn't find that location -- check WiFi and try again", false);
+          showToast("Location Not Found", false);
         }
         finish();
       });
@@ -136,10 +139,12 @@ void WeatherLocationActivity::handleUseCurrentLocation() {
   std::string name;
   double lat = 0.0, lon = 0.0;
   if (HomeStatusService::locateByIp(name, lat, lon)) {
-    WEATHER_LOCATION.setLocation(name, lat, lon);
-    showToast(("Location set: " + name).c_str(), true);
+    // Detected, not typed -- marked Auto, so it stays eligible for
+    // HomeStatusService's once-per-boot auto-refresh going forward.
+    WEATHER_LOCATION.setLocation(name, lat, lon, /*isManual=*/false);
+    showToast(("Location: " + name).c_str(), true);
   } else {
-    showToast("Couldn't detect location -- check WiFi and try again", false);
+    showToast("Location Not Found", false);
   }
   finish();
 }

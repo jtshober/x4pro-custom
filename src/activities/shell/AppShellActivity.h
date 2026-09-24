@@ -89,4 +89,11 @@ class AppShellActivity final : public Activity {
   // Books/Book Server/Settings only -- Continue's taps are handled inline in
   // loop() since they act on the carousel, not another top-level screen.
   void openActiveTabTarget();
+  // Same simple blocking popup WeatherLocationActivity uses for its own
+  // network actions (GUI.drawPopup + a FAST_REFRESH), reused here for the
+  // one-time per-boot location/clock/weather refresh switchTab() may kick
+  // off -- see HomeStatusService::refreshLocationAndClockOnce(). No trailing
+  // delay(): unlike WeatherLocationActivity's own toast, the blocking network
+  // call that follows keeps this on screen long enough on its own.
+  void showToast(const char* message);
 };

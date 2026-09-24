@@ -153,10 +153,29 @@ void AppShellActivity::setCarouselIndex(const size_t index) {
   requestUpdate();
 }
 
+void AppShellActivity::showToast(const char* message) {
+  RenderLock lock(*this);
+  GUI.drawPopup(renderer, message);
+  renderer.displayBuffer(HalDisplay::RefreshMode::FAST_REFRESH);
+}
+
 void AppShellActivity::switchTab(const Tab tab) {
   if (tab == activeTab) return;
   activeTab = tab;
   if (tab != Tab::Continue) {
+    // First time this boot the person does something more than glance at
+    // Continue: worth spending a few bounded seconds (see
+    // HomeStatusService::refreshLocationAndClockOnce()) getting location,
+    // clock and weather right -- something tick() itself is never allowed
+    // to do on its own (see HomeStatusService.h's header comment on why
+    // not). Skipped entirely once a location has been typed in Settings
+    // (WeatherLocationStore::isManualLocation()), and only ever attempted
+    // once regardless of outcome. The toast goes up BEFORE the blocking
+    // call, not after, since that call is what makes it necessary.
+    if (HomeStatusService::wouldAttemptBootRefresh()) {
+      showToast("Refreshing location & time...");
+      HomeStatusService::refreshLocationAndClockOnce();
+    }
     // Live tap while already on the shell: jump straight into the real
     // screen, no intermediate panel. (Re-entering the shell with one of
     // these tabs preselected -- e.g. after backing out of Books -- does NOT
