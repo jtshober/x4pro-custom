@@ -20,6 +20,7 @@
 #include "components/UiAppHelpers.h"
 #include "components/icons/bookmark.h"
 #include "fontIds.h"
+#include "util/HomeStatusService.h"
 #include "util/KoSyncStatus.h"
 
 // Internal constants
@@ -385,6 +386,23 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
     const int markX = batteryLeft ? batteryX + batteryReserve + syncMarkGap : batteryX - syncMarkGap - syncMarkSize;
     const int markY = band.y + std::max(0, (batteryH - syncMarkSize) / 2);
     KoSyncStatus::drawMark(renderer, markX, markY, syncMarkSize);
+  }
+
+  if (title == nullptr) {
+    // AppShellActivity's shell (Continue/Books/Book Server/Settings) is the
+    // only screen that calls drawHeader() with a null title -- this is the
+    // "titlebar, left side, across from the battery" clock+weather readout
+    // that was asked to live in the same space as the battery indicator, on
+    // whichever side the battery isn't.
+    const int lineHeight = renderer.getLineHeight(SMALL_FONT_ID);
+    const int statusY = band.y + std::max(0, (batteryH - lineHeight) / 2);
+    if (batteryLeft) {
+      HomeStatusService::drawTitleBarStatus(renderer, band.right() - tokens.headerSidePadding, statusY,
+                                            /*rightAligned=*/true);
+    } else {
+      HomeStatusService::drawTitleBarStatus(renderer, band.x + tokens.headerSidePadding, statusY,
+                                            /*rightAligned=*/false);
+    }
   }
 
   if (manualRightLabel) {

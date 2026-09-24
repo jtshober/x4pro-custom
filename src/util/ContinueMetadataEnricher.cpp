@@ -10,6 +10,7 @@
 #include <WString.h>
 
 #include <algorithm>
+#include <cctype>
 #include <string>
 
 #include "FsHelpers.h"
@@ -41,6 +42,19 @@ std::string filenameStem(const std::string& path) {
   return (dot == std::string::npos) ? name : name.substr(0, dot);
 }
 
+// True for an author string that carries no real information -- not just
+// literally empty, but the placeholder values EPUB metadata commonly uses
+// in place of a real name. Treating "Unknown" as if it were a usable author
+// was the actual bug behind a renamed file still failing to match: the
+// query became "<bad title> Unknown" instead of falling back to the (good)
+// filename.
+bool isGenericAuthor(const std::string& author) {
+  std::string lower = author;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](const unsigned char c) { return std::tolower(c); });
+  return lower.empty() || lower == "unknown" || lower == "unknown author" || lower == "n/a" || lower == "anonymous" ||
+        lower == "various" || lower == "unspecified";
+}
+
 // Title/author that look like they came from the filename rather than real
 // EPUB metadata: no author at all, or a title that's literally just the
 // filename, or a short no-space token (an acronym like "JPHEC"). Simple
@@ -48,7 +62,7 @@ std::string filenameStem(const std::string& path) {
 // title would also trip this and get looked up unnecessarily, which is
 // harmless (Open Library just won't find a confident match).
 bool looksLikeRawFilename(const RecentBook& book) {
-  if (book.author.empty()) return true;
+  if (isGenericAuthor(book.author)) return true;
   if (book.title == filenameStem(book.path)) return true;
   if (book.title.find(' ') == std::string::npos && book.title.size() < 24) return true;
   return false;
@@ -265,11 +279,14 @@ bool tryEnrichIfOnline(const RecentBook& book) {
   if (!looksLikeRawFilename(book)) return false;
   if (alreadyAttempted(book.path)) return false;
 
-  // Prefer the raw filename as the search text over an already-messy title
-  // field when the title itself looks like the problem (matches the
-  // "Unknown - JPHEC" case): the filename is at least as likely to carry a
-  // real title/author as whatever landed in the EPUB's own metadata.
-  const std::string query = book.author.empty() ? filenameStem(book.path) : book.title + " " + book.author;
+  // Prefer the raw filename as the search text whenever the author looks
+  // generic OR the title itself looks like the problem (matches the
+  // "Unknown - JPHEC" case): a real, renamed filename is a far better query
+  // than pairing a bad title with a placeholder author like "Unknown".
+  const bool titleLooksBad = book.title == filenameStem(book.path) ||
+                             (book.title.find(' ') == std::string::npos && book.title.size() < 24);
+  const std::string query =
+      (isGenericAuthor(book.author) || titleLooksBad) ? filenameStem(book.path) : book.title + " " + book.author;
 
   std::string cleanTitle, cleanAuthor;
   int coverId = 0;

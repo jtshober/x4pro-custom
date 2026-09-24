@@ -13,6 +13,7 @@
 #include "components/UITheme.h"
 #include "components/icons/cover.h"
 #include "fontIds.h"
+#include "util/HomeStatusService.h"
 #include "util/KoSyncStatus.h"
 
 namespace {
@@ -52,11 +53,15 @@ void RoundedRaffTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const 
   // Home screen header is custom-rendered in drawRecentBookCover.
   if (title == nullptr) {
     // No battery/title band to hang the "last KOSync attempt failed" mark on
-    // here, so pin it to the band's top-right corner.
+    // here, so pin it to the band's top-right corner; the clock+weather
+    // status line (the same "titlebar, across from the battery" request)
+    // goes in the mirror-image top-left corner, since this layout has no
+    // battery strip of its own to sit opposite.
     if (KoSyncStatus::isUnsynced()) {
       constexpr int syncMarkSize = 20;
       KoSyncStatus::drawMark(renderer, rect.x + rect.width - 12 - syncMarkSize, rect.y + 2, syncMarkSize);
     }
+    HomeStatusService::drawTitleBarStatus(renderer, rect.x + 12, rect.y + 6, /*rightAligned=*/false);
     return;
   }
   BaseTheme::drawHeader(renderer, rect, title, subtitle);

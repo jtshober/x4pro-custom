@@ -26,6 +26,7 @@ enum class SettingAction {
   TextSettings,
   KeyboardLayouts,
   FileTransfer,
+  WeatherLocation,
 };
 
 struct SettingInfo {

@@ -25,6 +25,8 @@
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
+#include "WeatherLocationActivity.h"
+#include "WeatherLocationStore.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
@@ -84,6 +86,7 @@ void SettingsActivity::rebuildSettingsLists() {
                             SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
   }
   systemSettings.push_back(SettingInfo::Action(StrId::STR_FILE_TRANSFER, SettingAction::FileTransfer));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_WEATHER_LOCATION, SettingAction::WeatherLocation));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
@@ -340,6 +343,9 @@ void SettingsActivity::toggleCurrentSetting() {
         // shell's existing File Transfer flow, same call Home used to make.
         activityManager.goToFileTransfer();
         break;
+      case SettingAction::WeatherLocation:
+        startActivityForResult(std::make_unique<WeatherLocationActivity>(renderer, mappedInput), resultHandler);
+        break;
       case SettingAction::Network:
         startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, false), resultHandler);
         break;
@@ -439,6 +445,9 @@ void SettingsActivity::openSleepTimeoutPicker() {
 }
 
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
+  if (setting.nameId == StrId::STR_WEATHER_LOCATION) {
+    return WEATHER_LOCATION.hasLocation() ? WEATHER_LOCATION.getLocationName() : "Not Set";
+  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
   }

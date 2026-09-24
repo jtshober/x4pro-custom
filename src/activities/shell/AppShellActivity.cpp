@@ -17,6 +17,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/ContinueMetadataEnricher.h"
+#include "util/HomeStatusService.h"
 
 namespace {
 // Not yet run through the localization pipeline -- English only until this
@@ -185,6 +186,12 @@ void AppShellActivity::openActiveTabTarget() {
 }
 
 void AppShellActivity::loop() {
+  // Cheap on almost every call -- see HomeStatusService's own comment for
+  // when it actually does anything. Runs on every tab, not just Continue:
+  // the clock+weather readout is drawn in the shared header, visible on all
+  // four tabs, so it needs refreshing regardless of which one is active.
+  HomeStatusService::tick();
+
   int tx = 0;
   int ty = 0;
   if (mappedInput.wasScreenTapped(tx, ty)) {
@@ -214,6 +221,29 @@ void AppShellActivity::loop() {
       openActiveTabTarget();
     }
     return;
+  }
+
+  // Physical page-turn buttons and a short Power press: reserved for the
+  // Continue carousel, same scope as swipe (see the header comment) -- no-op
+  // on the other tabs, which have no content of their own to page through.
+  if (activeTab == Tab::Continue && !recentBooks.empty()) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::PageForward)) {
+      setCarouselIndex(nextCarouselIndex());
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::PageBack)) {
+      setCarouselIndex(previousCarouselIndex());
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Power)) {
+      // Same action as tapping the centered cover: open it. A short Power
+      // press doesn't collide with sleep on this hardware -- sleep needs a
+      // HELD press past a duration threshold, checked elsewhere -- so this
+      // is safe to claim outright here, the same way the reader already
+      // gives a short Power press its own meaning in PAGE_TURN mode.
+      activityManager.goToReader(recentBooks[carouselIndex].path);
+      return;
+    }
   }
 
   // Cheap the overwhelming majority of the time (a single WiFi.status()
