@@ -105,6 +105,18 @@ void drawTitleBarStatus(const GfxRenderer& renderer, int x, int y, bool rightAli
 bool geocodeLocation(const std::string& query, std::string& outName, double& outLat, double& outLon);
 bool locateByIp(std::string& outName, double& outLat, double& outLon);
 
+// Forces an immediate weather fetch (and clock sync, if not already synced)
+// for whatever location is currently configured. Meant to be called right
+// after geocodeLocation()/locateByIp() sets a new location, while that same
+// connection is still up -- without this, a freshly typed-in or re-detected
+// location doesn't actually show its own weather/clock until the next
+// passive tick() refresh happens to run (up to WEATHER_REFRESH_INTERVAL_MS
+// later, and only then if WiFi happens to already be up for something else).
+// Ignores the once-per-boot gate entirely -- this is an explicit action, not
+// the passive auto-refresh, so it always re-fetches. A no-op if WiFi isn't
+// actually up (caller already handled that failure).
+void refreshWeatherNow();
+
 // True as long as the one-time automatic per-boot location/clock/weather
 // refresh below hasn't been attempted yet this boot -- true for both auto
 // and manual location, since a manual location still needs its clock and

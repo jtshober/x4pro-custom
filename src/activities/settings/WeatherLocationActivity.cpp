@@ -142,6 +142,11 @@ void WeatherLocationActivity::handleTypeLocation() {
           // (DST-correct) offset can take over again.
           SETTINGS.clockOffsetForced = 0;
           SETTINGS.saveToFile();
+          // Fetch weather for the new location right now, while geocoding's
+          // own connection is still up -- otherwise the title bar keeps
+          // showing whatever the old location's weather was until the next
+          // passive refresh happens to run.
+          HomeStatusService::refreshWeatherNow();
           showToast(("Location: " + name).c_str(), true);
         } else {
           showToast("Location Not Found", false);
@@ -161,6 +166,8 @@ void WeatherLocationActivity::handleUseCurrentLocation() {
     // Same vote-of-confidence release as the typed-location path above.
     SETTINGS.clockOffsetForced = 0;
     SETTINGS.saveToFile();
+    // Same immediate refresh as the typed-location path -- see its comment.
+    HomeStatusService::refreshWeatherNow();
     showToast(("Location: " + name).c_str(), true);
   } else {
     showToast("Location Not Found", false);

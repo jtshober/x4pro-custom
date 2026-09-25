@@ -505,4 +505,10 @@ void refreshLocationAndClockOnce() {
   tryFetchWeather();
 }
 
+void refreshWeatherNow() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (!clockSynced) trySyncClock();
+  tryFetchWeather();
+}
+
 }  // namespace HomeStatusService
