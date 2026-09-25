@@ -476,9 +476,13 @@ bool wouldAttemptBootRefresh() { return !bootLocationRefreshAttempted; }
 
 void refreshLocationAndClockOnce() {
   if (bootLocationRefreshAttempted) return;
+  // Piggyback only -- never opens a connection of its own. Checked before
+  // marking the one-shot attempted, so calling this opportunistically at
+  // several points (book open, book close, Book Server browsing) is safe:
+  // it's a no-op every time WiFi happens not to be up yet, and does its job
+  // the first time one of those points finds it actually connected.
+  if (WiFi.status() != WL_CONNECTED) return;
   bootLocationRefreshAttempted = true;
-
-  if (!ensureWifiConnectedActive()) return;  // No saved network reachable right now.
 
   // Auto mode: (re)detect location by IP first, since a fresh detection is
   // more likely to be right than whatever was last saved. Never touches a

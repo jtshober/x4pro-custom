@@ -153,30 +153,17 @@ void AppShellActivity::setCarouselIndex(const size_t index) {
   requestUpdate();
 }
 
-void AppShellActivity::showToast(const char* message) {
-  RenderLock lock(*this);
-  GUI.drawPopup(renderer, message);
-  renderer.displayBuffer(HalDisplay::RefreshMode::FAST_REFRESH);
-}
-
 void AppShellActivity::switchTab(const Tab tab) {
   if (tab == activeTab) return;
   activeTab = tab;
   if (tab != Tab::Continue) {
-    // First time this boot the person does something more than glance at
-    // Continue: worth spending a few bounded seconds (see
-    // HomeStatusService::refreshLocationAndClockOnce()) getting clock and
-    // weather right -- something tick() itself is never allowed to do on
-    // its own (see HomeStatusService.h's header comment on why not). Runs
-    // for a manually-typed location too (just skips the IP re-detect step),
-    // and only ever attempted once regardless of outcome -- opening a book
-    // instead of a tab is the other, silent way this can already have
-    // happened by now (see EpubReaderActivity). The toast goes up BEFORE the
-    // blocking call, not after, since that call is what makes it necessary.
-    if (HomeStatusService::wouldAttemptBootRefresh()) {
-      showToast("Syncing time & weather...");
-      HomeStatusService::refreshLocationAndClockOnce();
-    }
+    // Books and Settings are entirely offline screens -- switching to them
+    // must never bring up WiFi on its own just to get a clock/weather
+    // reading. That only ever happens piggybacked on a connection something
+    // else already needed (opening/closing a book, Book Server browsing) or
+    // an explicit Settings > Weather Location action -- see
+    // HomeStatusService.h's header comment.
+    //
     // Live tap while already on the shell: jump straight into the real
     // screen, no intermediate panel. (Re-entering the shell with one of
     // these tabs preselected -- e.g. after backing out of Books -- does NOT

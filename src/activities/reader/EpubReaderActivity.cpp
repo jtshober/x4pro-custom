@@ -344,31 +344,24 @@ void EpubReaderActivity::attemptOpenAutoSync() {
                              [this](KOReaderAutoSync::Message msg) { showAutoSyncToast(autoSyncMessageText(msg)); });
   endSyncStatusAttempt(statusTracked, pushResult.result);
 
-  // Opening a book is this app's real "I'm about to be online for a while"
-  // moment -- 90% of the time this is the only network activity that boot,
-  // since most opens don't even land on Continue or Settings first. Unlike
-  // the metadata enrichment piggyback below, this does NOT wait for the
-  // KOSync push above to have already connected: KOReaderAutoSync::push()
-  // is a silent no-op with WiFi never touched when KOReader sync isn't
-  // configured (see KOReaderAutoSync.cpp), which would otherwise mean a
-  // book-only reader never gets a clock/weather sync at all.
-  // refreshLocationAndClockOnce() opens its own short-lived connection if
-  // nothing already has WiFi up (same bounded budget Settings' own explicit
-  // actions use), so this fires the same whether or not KOSync is set up.
-  // Silent (no toast): the reader is already on screen. Instant no-op after
-  // the first attempt this boot, same as every other call site.
-  if (HomeStatusService::wouldAttemptBootRefresh()) {
-    HomeStatusService::refreshLocationAndClockOnce();
-  }
-
-  // Piggybacks whatever connection is now up (never opens one itself,
-  // matching ContinueMetadataEnricher's own rule) to catch a book that was
-  // just renamed via the File Browser's Edit option: a rename gives the
-  // book a new path, which the enricher has never attempted before, so this
-  // picks it up the moment it's next opened rather than waiting for it to
-  // show up centered on Continue. A no-op for every ordinary open where
-  // metadata already looked fine or was already attempted.
+  // Piggybacks whatever connection is now up (never opens one itself, same
+  // rule HomeStatusService and ContinueMetadataEnricher both follow -- see
+  // HomeStatusService.h's header comment). A no-op with WiFi never touched
+  // when KOReader sync isn't configured (KOReaderAutoSync::push() is a
+  // silent skip then -- see KOReaderAutoSync.cpp) or the saved networks
+  // weren't in range.
   if (WiFi.status() == WL_CONNECTED) {
+    // Opening a book is one of this app's few real network moments -- worth
+    // catching for a clock/weather sync while the connection is already up.
+    // Instant no-op after the first success this boot.
+    HomeStatusService::refreshLocationAndClockOnce();
+
+    // Also catches a book that was just renamed via the File Browser's Edit
+    // option: a rename gives the book a new path, which the enricher has
+    // never attempted before, so this picks it up the moment it's next
+    // opened rather than waiting for it to show up centered on Continue. A
+    // no-op for every ordinary open where metadata already looked fine or
+    // was already attempted.
     RecentBook currentBookInfo = RECENT_BOOKS.getDataFromBook(bookPath);
     currentBookInfo.path = bookPath;  // Ensure this is set even if the book isn't in recents yet.
     if (ContinueMetadataEnricher::tryEnrichIfOnline(currentBookInfo)) {
@@ -437,6 +430,14 @@ void EpubReaderActivity::attemptCloseAutoSync() {
       },
       [this](KOReaderAutoSync::Message msg) { showAutoSyncToast(autoSyncMessageText(msg)); });
   endSyncStatusAttempt(statusTracked, pushResult.result);
+
+  // Same piggyback as the open hook above -- closing a book is just as
+  // legitimate a network moment, and this may be the first (or only) one
+  // this boot if the open hook's own push was skipped or failed. Instant
+  // no-op after the first success this boot.
+  if (WiFi.status() == WL_CONNECTED) {
+    HomeStatusService::refreshLocationAndClockOnce();
+  }
 }
 
 void EpubReaderActivity::attemptAutoSyncBeforeSleep() {

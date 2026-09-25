@@ -7,8 +7,7 @@ class GfxRenderer;
 // when something else already repaints the header -- never a forced timer
 // refresh) readout fed by a lightweight periodic background check.
 //
-// This bundles two concerns that both need the same "is WiFi up, and if
-// not, should we open it" logic:
+// This bundles two concerns:
 //
 //  - A software clock. The X4 Pro has no DS3231 hardware RTC -- that clock
 //    feature (CrossPointSettings::statusBarClock, HalClock) is gated behind
@@ -22,11 +21,12 @@ class GfxRenderer;
 //
 //    Deliberately no boot-time guess: the title bar shows nothing at all
 //    until a real sync happens -- no clock, no weather -- per how this was
-//    asked to behave. In practice that's essentially immediate: opening a
-//    book already opens WiFi to push a KOSync position (see
-//    EpubReaderActivity), and that connection is piggybacked for an
-//    immediate clock+weather sync the same way refreshLocationAndClockOnce()
-//    below piggybacks it from the shell's own tab switch.
+//    asked to behave. In practice that's essentially immediate: opening or
+//    closing a book already opens WiFi to push a KOSync position (see
+//    EpubReaderActivity), and Book Server browsing already needs the network
+//    up too (see OpdsBookBrowserActivity) -- both piggyback an immediate
+//    clock+weather sync onto that connection via refreshLocationAndClockOnce()
+//    below.
 //
 //  - Current weather for whatever location Settings > Weather Location has
 //    configured (see WeatherLocationStore), from Open-Meteo -- free, no API
@@ -35,19 +35,16 @@ class GfxRenderer;
 //    doesn't show local time until a weather fetch has supplied one -- no
 //    separate timezone lookup needed.
 //
-// Unlike ContinueMetadataEnricher (which only ever piggybacks a connection
-// something else already opened), tick() is allowed to open its own
-// short-lived WiFi connection using saved credentials -- the same idea
-// KOReaderAutoSync's own push() already relies on for KOSync -- because a
-// clock/weather readout that only ever updated when the device happened to
-// already be online for some other reason would go stale for days at a
-// time on a reader most people leave in standby.
-//
-// tick() ITSELF never opens a connection, though -- it only piggybacks one
-// that's already up (see wifiAlreadyConnected() in the .cpp for why, and the
-// history of the freeze that rule exists to prevent). The one deliberate,
-// bounded exception is refreshLocationAndClockOnce() below, which
-// AppShellActivity calls at most once per boot.
+// This service NEVER opens a WiFi connection just to get a clock/weather
+// reading -- not from tick(), not from refreshLocationAndClockOnce(), not
+// from switching to the Books or Settings tab. Both of those only ever
+// piggyback a connection something else already opened for its own reason
+// (see wifiAlreadyConnected() in the .cpp for tick()'s own history of why:
+// an earlier version opened its own connection and a flaky network turned
+// that into a recurring 10-20 second UI freeze). The two genuine exceptions
+// are geocodeLocation()/locateByIp()/refreshWeatherNow() below, which DO open
+// their own short-lived connection -- but only ever in response to an
+// explicit Settings > Weather Location action, never passively.
 namespace HomeStatusService {
 
 // Cheap on almost every call (a couple of millis() comparisons); does real
@@ -118,31 +115,26 @@ bool locateByIp(std::string& outName, double& outLat, double& outLon);
 void refreshWeatherNow();
 
 // True as long as the one-time automatic per-boot location/clock/weather
-// refresh below hasn't been attempted yet this boot -- true for both auto
-// and manual location, since a manual location still needs its clock and
-// weather synced at least once. Callers that show a toast (AppShellActivity)
-// check this BEFORE calling refreshLocationAndClockOnce(), since that call
-// can block briefly and the toast should be on screen before it starts, not
-// after; a silent piggyback (EpubReaderActivity, right after a KOSync push
-// that already has WiFi up) doesn't need to check this first, since the
-// call itself is an instant no-op after the first attempt.
+// piggyback below hasn't succeeded yet this boot -- true for both auto and
+// manual location, since a manual location still needs its clock and weather
+// synced at least once. Purely informational (refreshLocationAndClockOnce()
+// is already safe to call unconditionally); callers use it only to skip a
+// pointless call once this boot's job is done.
 bool wouldAttemptBootRefresh();
 
-// The one deliberate exception to "tick() never opens its own connection":
-// meant to be called once, the first time the person does anything that
-// might reasonably need network this boot -- opening a book (which already
-// connects to push a KOSync position -- see EpubReaderActivity) or switching
-// off the Continue tab (AppShellActivity). Opens WiFi if needed (same
-// bounded budget ensureWifiConnectedActive() already uses elsewhere for
-// Settings' own explicit actions -- worst case a handful of seconds, not the
-// endless retry loop that used to cause a freeze; an instant no-op if
-// something else already has WiFi up, which is the common case for both
-// call sites above), then while that connection is open: re-detects location
+// Piggyback-only, same rule as tick(): NEVER opens a WiFi connection of its
+// own, full stop -- a no-op whenever WiFi isn't already up for some other
+// reason. Meant to be called opportunistically at every point that already
+// has (or might have) a real network connection open for its own purpose --
+// opening or closing a book (KOSync position push -- see
+// EpubReaderActivity), Book Server browsing (see OpdsBookBrowserActivity) --
+// NEVER from simply switching to the Books or Settings tab, which must stay
+// entirely offline. While a connection happens to be up: re-detects location
 // by IP (skipped entirely if the saved location is manual), syncs the clock,
 // and fetches weather for whatever location (auto-detected or manually
-// typed) ends up configured. Safe to call more than once -- every call after
-// the first this boot is an instant no-op regardless of whether the first
-// attempt succeeded.
+// typed) ends up configured. Safe to call from anywhere, any number of
+// times: an instant no-op both before WiFi is actually up and, once it
+// succeeds, for the rest of the boot regardless of outcome.
 void refreshLocationAndClockOnce();
 
 }  // namespace HomeStatusService
