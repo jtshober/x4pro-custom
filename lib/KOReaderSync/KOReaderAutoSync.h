@@ -125,11 +125,44 @@ class KOReaderAutoSync {
    *                                 called when shouldApplyRemote is true --
    *                                 the caller's reposition + reload makes
    *                                 any further message pointless.
+   * @param onConnected             Called at most once, synchronously, the
+   *                                 moment Wi-Fi is confirmed connected --
+   *                                 whether it was already up when push() was
+   *                                 called, or push() just brought it up
+   *                                 itself -- and always BEFORE any of the
+   *                                 checks below that can tear the radio back
+   *                                 down (already-in-sync, remote-ahead, or
+   *                                 the ordinary push's own teardown after
+   *                                 the upload). Never called on an early
+   *                                 Skipped return (no credentials, or no
+   *                                 saved network in range) -- there's no
+   *                                 connection to piggyback on in that case.
+   *                                 This exists because this function tears
+   *                                 its own connection down again as soon as
+   *                                 it's done with it whenever IT was the one
+   *                                 that brought Wi-Fi up (the common case for
+   *                                 the book open/close hooks, since Wi-Fi is
+   *                                 normally off the rest of the time) -- by
+   *                                 the time push() returns, WiFi.status() is
+   *                                 very often already back to
+   *                                 WL_DISCONNECTED, so a caller that only
+   *                                 checks WiFi.status() after push() returns
+   *                                 (as HomeStatusService::
+   *                                 refreshLocationAndClockOnce() and
+   *                                 ContinueMetadataEnricher::tryEnrichIfOnline()
+   *                                 both do) will find it false almost every
+   *                                 time and silently do nothing, even though
+   *                                 a real connection genuinely was up for a
+   *                                 few seconds. Any piggybacked work that
+   *                                 itself needs the network belongs in this
+   *                                 callback instead of after push() returns.
+   *                                 Pass an empty std::function for none.
    */
   static PushResult push(const std::shared_ptr<Epub>& epub, int currentSpineIndex, int currentPage,
                          int totalPagesInSpine, std::optional<uint16_t> currentParagraphIndex,
                          const std::vector<SavedNetwork>& savedNetworks, const std::string& preferredSsid,
                          GfxRenderer& renderer, bool checkRemoteFirst,
                          const std::function<void(Message)>& onWaitMessage,
-                         const std::function<void(Message)>& onResultMessage);
+                         const std::function<void(Message)>& onResultMessage,
+                         const std::function<void()>& onConnected = {});
 };

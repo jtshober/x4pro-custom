@@ -338,41 +338,46 @@ void EpubReaderActivity::attemptOpenAutoSync() {
   // remote position actually means something (there's a reader on screen
   // to jump).
   const bool statusTracked = beginSyncStatusAttempt();
-  const auto pushResult =
-      KOReaderAutoSync::push(epub, currentSpineIndex, currentPageNow, totalPagesNow, paragraphIndex, networks,
-                             preferredSsid, renderer, /*checkRemoteFirst=*/true, /*onWaitMessage=*/{},
-                             [this](KOReaderAutoSync::Message msg) { showAutoSyncToast(autoSyncMessageText(msg)); });
+  const auto pushResult = KOReaderAutoSync::push(
+      epub, currentSpineIndex, currentPageNow, totalPagesNow, paragraphIndex, networks, preferredSsid, renderer,
+      /*checkRemoteFirst=*/true, /*onWaitMessage=*/{},
+      [this](KOReaderAutoSync::Message msg) { showAutoSyncToast(autoSyncMessageText(msg)); },
+      [this]() {
+        // Piggybacks the connection push() itself just brought up (or found
+        // already up) -- never opens one on its own, same rule HomeStatusService
+        // and ContinueMetadataEnricher both follow (see HomeStatusService.h's
+        // header comment). This runs from INSIDE push(), before it tears that
+        // connection back down -- checking WiFi.status() only after push()
+        // returns looked right but was almost always too late: push() itself
+        // disconnects and powers the radio off again as soon as it's done
+        // with it, in every case where it was the one that brought Wi-Fi up
+        // (see KOReaderAutoSync.cpp), which is the ordinary case here since
+        // Wi-Fi is normally off the rest of the time.
+        //
+        // Opening a book is one of this app's few real network moments --
+        // worth catching for a clock/weather sync while the connection is
+        // actually up. Instant no-op after the first success this boot.
+        HomeStatusService::refreshLocationAndClockOnce();
+
+        // Also catches a book that was just renamed via the File Browser's
+        // Edit option: a rename gives the book a new path, which the
+        // enricher has never attempted before, so this picks it up the
+        // moment it's next opened rather than waiting for it to show up
+        // centered on Continue. A no-op for every ordinary open where
+        // metadata already looked fine or was already attempted.
+        RecentBook currentBookInfo = RECENT_BOOKS.getDataFromBook(bookPath);
+        currentBookInfo.path = bookPath;  // Ensure this is set even if the book isn't in recents yet.
+        if (ContinueMetadataEnricher::tryEnrichIfOnline(currentBookInfo)) {
+          RenderLock lock(*this);
+          GUI.drawPopup(renderer, "Metadata updated");
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          lock.unlock();
+          delay(350);  // Same fast duration as the sync success toast -- this is good news, not an error.
+          requestUpdate(true);
+        }
+      });
   endSyncStatusAttempt(statusTracked, pushResult.result);
 
-  // Piggybacks whatever connection is now up (never opens one itself, same
-  // rule HomeStatusService and ContinueMetadataEnricher both follow -- see
-  // HomeStatusService.h's header comment). A no-op with WiFi never touched
-  // when KOReader sync isn't configured (KOReaderAutoSync::push() is a
-  // silent skip then -- see KOReaderAutoSync.cpp) or the saved networks
-  // weren't in range.
-  if (WiFi.status() == WL_CONNECTED) {
-    // Opening a book is one of this app's few real network moments -- worth
-    // catching for a clock/weather sync while the connection is already up.
-    // Instant no-op after the first success this boot.
-    HomeStatusService::refreshLocationAndClockOnce();
-
-    // Also catches a book that was just renamed via the File Browser's Edit
-    // option: a rename gives the book a new path, which the enricher has
-    // never attempted before, so this picks it up the moment it's next
-    // opened rather than waiting for it to show up centered on Continue. A
-    // no-op for every ordinary open where metadata already looked fine or
-    // was already attempted.
-    RecentBook currentBookInfo = RECENT_BOOKS.getDataFromBook(bookPath);
-    currentBookInfo.path = bookPath;  // Ensure this is set even if the book isn't in recents yet.
-    if (ContinueMetadataEnricher::tryEnrichIfOnline(currentBookInfo)) {
-      RenderLock lock(*this);
-      GUI.drawPopup(renderer, "Metadata updated");
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-      lock.unlock();
-      delay(350);  // Same fast duration as the sync success toast -- this is good news, not an error.
-      requestUpdate(true);
-    }
-  }
   // Any Success here means the server's position was actually checked and
   // reconciled (already in sync, remote applied below, or local pushed).
   openAutoSyncOk = (pushResult.result == KOReaderAutoSync::Result::Success);
@@ -428,16 +433,19 @@ void EpubReaderActivity::attemptCloseAutoSync() {
         if (msg == KOReaderAutoSync::Message::Repositioning) return;
         showAutoSyncPopup(autoSyncMessageText(msg));
       },
-      [this](KOReaderAutoSync::Message msg) { showAutoSyncToast(autoSyncMessageText(msg)); });
+      [this](KOReaderAutoSync::Message msg) { showAutoSyncToast(autoSyncMessageText(msg)); },
+      [this]() {
+        // Same piggyback as the open hook above, and run the same way --
+        // from inside push(), before it tears its own connection back down
+        // (see the comment in attemptOpenAutoSync() for why checking
+        // WiFi.status() only after push() returns doesn't reliably work).
+        // Closing a book is just as legitimate a network moment, and this
+        // may be the first (or only) one this boot if the open hook's own
+        // push was skipped or failed. Instant no-op after the first success
+        // this boot.
+        HomeStatusService::refreshLocationAndClockOnce();
+      });
   endSyncStatusAttempt(statusTracked, pushResult.result);
-
-  // Same piggyback as the open hook above -- closing a book is just as
-  // legitimate a network moment, and this may be the first (or only) one
-  // this boot if the open hook's own push was skipped or failed. Instant
-  // no-op after the first success this boot.
-  if (WiFi.status() == WL_CONNECTED) {
-    HomeStatusService::refreshLocationAndClockOnce();
-  }
 }
 
 void EpubReaderActivity::attemptAutoSyncBeforeSleep() {

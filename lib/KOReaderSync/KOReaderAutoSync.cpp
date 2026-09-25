@@ -124,7 +124,8 @@ KOReaderAutoSync::PushResult KOReaderAutoSync::push(
     const std::shared_ptr<Epub>& epub, int currentSpineIndex, int currentPage, int totalPagesInSpine,
     std::optional<uint16_t> currentParagraphIndex, const std::vector<SavedNetwork>& savedNetworks,
     const std::string& preferredSsid, GfxRenderer& renderer, bool checkRemoteFirst,
-    const std::function<void(Message)>& onWaitMessage, const std::function<void(Message)>& onResultMessage) {
+    const std::function<void(Message)>& onWaitMessage, const std::function<void(Message)>& onResultMessage,
+    const std::function<void()>& onConnected) {
   if (!epub || !KOREADER_STORE.hasCredentials() || savedNetworks.empty()) {
     return {Result::Skipped};
   }
@@ -184,6 +185,18 @@ KOReaderAutoSync::PushResult KOReaderAutoSync::push(
     // the manual sync flow -- modem sleep can turn this into a multi-second
     // stall that reads as a timeout.
     WiFi.setSleep(false);
+  }
+
+  // Wi-Fi is guaranteed connected from here on -- either it already was
+  // (weConnected == false), or the block above just connected it and would
+  // have already returned Skipped/Failed otherwise. Every path from here
+  // downward that hands control back to the caller either returns directly
+  // or first tears this connection back down (see the comment on
+  // onConnected in the header for why that ordering matters) -- so this is
+  // the one moment a caller can safely piggyback its own network use on this
+  // connection.
+  if (onConnected) {
+    onConnected();
   }
 
   const std::string documentHash = documentHashForPath(epub->getPath());
