@@ -221,22 +221,21 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t clockUtcOffsetQ = 48;
   // Clock display format: 0 = 24-hour, 1 = 12-hour
   uint8_t clockFormat = 0;
+  // When set, HomeStatusService's title-bar clock uses clockUtcOffsetQ
+  // unconditionally, ignoring any weather-fetch-derived offset even when one
+  // is available. Set to 1 whenever WeatherLocationActivity's "Set Time
+  // Zone" flow completes (an explicit manual choice), and cleared back to 0
+  // whenever a location is (re)picked via "Type a Location" or "Use Current
+  // Location" (an explicit vote of confidence in auto/weather again).
+  // Exists because IP-based auto-location can be reliably wrong for reasons
+  // outside this device's control (some carriers' IP blocks are registered
+  // to one fixed city nationwide, e.g. Seattle for many T-Mobile customers)
+  // -- without this, a person in that situation could never get a correct
+  // clock while weather kept "succeeding" for the wrong place.
+  uint8_t clockOffsetForced = 0;
   // Set once an NTP sync succeeds. Used to skip re-syncing on every WiFi connect.
   // Resetting to 0 (e.g. via the web UI) forces a re-sync on next WiFi connect.
   uint8_t clockHasBeenSynced = 0;
-  // Unix time (UTC seconds) of the last successful HomeStatusService NTP
-  // sync -- a separate concern from clockHasBeenSynced above, which is the
-  // X3 hardware-clock path's own flag. HomeStatusService writes this every
-  // time its own trySyncClock() succeeds, and reads it once at the start of
-  // the very next boot to seed the title-bar clock immediately (paired with
-  // clockUtcOffsetQ for the zone, since weather hasn't run yet that early)
-  // instead of showing nothing until network happens again. That seeded
-  // time is a guess extrapolated from whenever this was last written --
-  // accurate to the second only if the device wasn't off for long -- and is
-  // silently replaced the moment a real sync succeeds again. 0 = never
-  // synced (fresh install, or lost along with everything else in
-  // CrossPointSettings after a full battery-dead / hard-reset).
-  uint32_t lastSyncedEpoch = 0;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
   uint8_t textAntiAliasing = 1;

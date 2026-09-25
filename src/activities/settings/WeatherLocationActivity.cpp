@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "ClockOffsetActivity.h"
+#include "CrossPointSettings.h"
 #include "WeatherLocationStore.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
@@ -55,8 +56,18 @@ void WeatherLocationActivity::onEnter() {
     } else if (idx == 2) {
       // Reuses the same offset the X3 status-bar clock stores
       // (SETTINGS.clockUtcOffsetQ) -- one timezone setting, not two.
-      startActivityForResult(std::make_unique<ClockOffsetActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { finish(); });
+      startActivityForResult(std::make_unique<ClockOffsetActivity>(renderer, mappedInput), [this](const ActivityResult&) {
+        // An explicit manual choice: from here on, HomeStatusService's
+        // clock uses this offset unconditionally, even over a "successful"
+        // weather fetch -- see CrossPointSettings::clockOffsetForced. This
+        // is what lets someone whose auto-detected location is reliably
+        // wrong (e.g. certain carriers always resolving to one fixed city)
+        // actually get a correct clock. Cleared again by picking a location
+        // below.
+        SETTINGS.clockOffsetForced = 1;
+        SETTINGS.saveToFile();
+        finish();
+      });
     } else {
       // "Turn Off Weather" -- only reachable when hasLocation was true, so
       // index 3 always means this option.
@@ -126,6 +137,11 @@ void WeatherLocationActivity::handleTypeLocation() {
           // once-per-boot auto-refresh (see refreshLocationAndClockOnce())
           // never silently overwrites it with an IP-based guess later.
           WEATHER_LOCATION.setLocation(name, lat, lon, /*isManual=*/true);
+          // Picking a location again is a vote of confidence in auto/weather
+          // -- release any earlier "Set Time Zone" override so weather's own
+          // (DST-correct) offset can take over again.
+          SETTINGS.clockOffsetForced = 0;
+          SETTINGS.saveToFile();
           showToast(("Location: " + name).c_str(), true);
         } else {
           showToast("Location Not Found", false);
@@ -142,6 +158,9 @@ void WeatherLocationActivity::handleUseCurrentLocation() {
     // Detected, not typed -- marked Auto, so it stays eligible for
     // HomeStatusService's once-per-boot auto-refresh going forward.
     WEATHER_LOCATION.setLocation(name, lat, lon, /*isManual=*/false);
+    // Same vote-of-confidence release as the typed-location path above.
+    SETTINGS.clockOffsetForced = 0;
+    SETTINGS.saveToFile();
     showToast(("Location: " + name).c_str(), true);
   } else {
     showToast("Location Not Found", false);

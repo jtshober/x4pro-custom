@@ -9,6 +9,18 @@
 #include <algorithm>
 #include <iterator>
 
+namespace {
+// Filename with directories and extension stripped -- same small helper
+// ContinueMetadataEnricher carries for its own use, duplicated here rather
+// than shared across a lib/src boundary for one four-line function.
+std::string filenameStem(const std::string& path) {
+  const size_t slash = path.find_last_of('/');
+  const std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+  const size_t dot = name.find_last_of('.');
+  return (dot == std::string::npos) ? name : name.substr(0, dot);
+}
+}  // namespace
+
 void RecentBooksStore::toJson(JsonDocument& doc) const {
   JsonArray arr = doc["books"].to<JsonArray>();
   for (const auto& book : recentBooks) {
@@ -17,6 +29,7 @@ void RecentBooksStore::toJson(JsonDocument& doc) const {
     obj["title"] = book.title;
     obj["author"] = book.author;
     obj["coverBmpPath"] = book.coverBmpPath;
+    obj["metadataEnriched"] = book.metadataEnriched;
   }
 }
 
@@ -33,6 +46,7 @@ bool RecentBooksStore::fromJson(JsonVariantConst doc) {
     book.title = obj["title"] | "";
     book.author = obj["author"] | "";
     book.coverBmpPath = obj["coverBmpPath"] | "";
+    book.metadataEnriched = obj["metadataEnriched"] | false;
     recentBooks.push_back(book);
   }
 
@@ -40,22 +54,44 @@ bool RecentBooksStore::fromJson(JsonVariantConst doc) {
   return true;
 }
 
-void RecentBooksStore::addBook(const std::string& path, const std::string& title, const std::string& author,
-                               const std::string& coverBmpPath) {
+void RecentBooksStore::addBook(const std::string& path, const std::string& embeddedTitle,
+                               const std::string& embeddedAuthor, const std::string& coverBmpPath) {
   // Drop stale entries first so a new add can't evict a valid book in their stead.
   pruneMissing();
 
-  // Remove existing entry if present
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
+
+  // Priority order for what's shown/searched: fetched (Open Library) metadata
+  // > filename > the book's own embedded metadata. A path that's already
+  // metadataEnriched keeps its fetched title/author forever (until a rename
+  // gives it a new path and thus a fresh, unenriched entry) -- simply
+  // reopening the book must never clobber a good fetched title back to the
+  // filename or embedded metadata.
+  if (it != recentBooks.end() && it->metadataEnriched) {
+    RecentBook enriched = *it;
+    if (!coverBmpPath.empty()) enriched.coverBmpPath = coverBmpPath;
+    recentBooks.erase(it);
+    recentBooks.insert(recentBooks.begin(), enriched);
+    if (recentBooks.size() > MAX_RECENT_BOOKS) recentBooks.resize(MAX_RECENT_BOOKS);
+    saveToFile();
+    return;
+  }
+
   if (it != recentBooks.end()) {
     recentBooks.erase(it);
   }
 
-  // Add to front
-  recentBooks.insert(recentBooks.begin(), {path, title, author, coverBmpPath});
+  // Not enriched yet: the filename is trusted over whatever title happens to
+  // be baked into the book's own metadata -- if the person renamed the file,
+  // this is what makes the new name show up immediately, and it's also
+  // exactly what ContinueMetadataEnricher looks up next (see
+  // looksLikeRawFilename()'s title-equals-filename check). Falls back to the
+  // embedded title only in the near-impossible case of an empty stem.
+  const std::string stem = filenameStem(path);
+  const std::string title = stem.empty() ? embeddedTitle : stem;
+  recentBooks.insert(recentBooks.begin(), RecentBook{path, title, embeddedAuthor, coverBmpPath, false});
 
-  // Trim to max size
   if (recentBooks.size() > MAX_RECENT_BOOKS) {
     recentBooks.resize(MAX_RECENT_BOOKS);
   }
@@ -72,6 +108,7 @@ void RecentBooksStore::updateBook(const std::string& path, const std::string& ti
     book.title = title;
     book.author = author;
     book.coverBmpPath = coverBmpPath;
+    book.metadataEnriched = true;
     saveToFile();
   }
 }

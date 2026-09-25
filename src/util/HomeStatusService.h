@@ -14,21 +14,19 @@ class GfxRenderer;
 //    feature (CrossPointSettings::statusBarClock, HalClock) is gated behind
 //    halClock.isAvailable(), which is X3-only. Instead, this uses the
 //    ESP32-S3's own always-on internal RTC timer (the same one <time.h>'s
-//    time()/configTime() already use under the hood), seeded once per boot
-//    (and re-synced periodically to correct drift) from NTP. That timer
-//    keeps running across sleep/wake as long as the device has power; only
-//    a full battery-dead or hard-reset loses it, at which point it simply
-//    re-syncs the next time WiFi comes up, same as any first boot.
+//    time()/configTime() already use under the hood), synced from NTP the
+//    first time WiFi is actually available, and periodically thereafter to
+//    correct drift. That timer keeps running across sleep/wake as long as
+//    the device has power; only a full battery-dead or hard-reset loses it,
+//    at which point it simply re-syncs the next time WiFi comes up.
 //
-//    Boot-time seeding: a real NTP sync also persists its resulting time to
-//    CrossPointSettings::lastSyncedEpoch. At the start of the very next
-//    boot, tick() seeds the in-memory clock from that persisted value
-//    (paired with the manual Settings > Weather Location > Set Time Zone
-//    offset, since weather hasn't run yet this boot) so the title bar shows
-//    a clock immediately instead of staying blank until network happens.
-//    That seeded time is a guess extrapolated from whenever the device last
-//    synced -- accurate to the second only if it wasn't off for long -- and
-//    is silently replaced the moment a real sync succeeds again this boot.
+//    Deliberately no boot-time guess: the title bar shows nothing at all
+//    until a real sync happens -- no clock, no weather -- per how this was
+//    asked to behave. In practice that's essentially immediate: opening a
+//    book already opens WiFi to push a KOSync position (see
+//    EpubReaderActivity), and that connection is piggybacked for an
+//    immediate clock+weather sync the same way refreshLocationAndClockOnce()
+//    below piggybacks it from the shell's own tab switch.
 //
 //  - Current weather for whatever location Settings > Weather Location has
 //    configured (see WeatherLocationStore), from Open-Meteo -- free, no API
@@ -57,27 +55,27 @@ namespace HomeStatusService {
 // same pattern as ContinueMetadataEnricher::tryEnrichIfOnline().
 void tick();
 
-// True once the clock has a time to show this boot -- either a real NTP
-// sync, or (until one happens) the persisted-time boot seed described above.
-// The clock and weather are independent: the clock shows as soon as it has a
-// time and SOME UTC offset (a fresh weather fetch's if there is one, else
-// the manually-set Settings > Weather Location > Set Time Zone offset --
-// see the .cpp), and weather rides alongside it only when a location is
-// configured and actually reachable.
+// True once the clock has actually synced via NTP this boot -- false the
+// entire time between boot and the first real network sync (see this file's
+// header comment: there is deliberately no boot-time guess). The clock and
+// weather are independent: the clock shows as soon as it has synced and has
+// SOME UTC offset (a fresh weather fetch's if there is one, else the
+// manually-set Settings > Weather Location > Set Time Zone offset -- see the
+// .cpp), and weather rides alongside it only when a location is configured
+// and actually reachable.
 bool isReady();
 
 // "2:45 PM | Mostly Cloudy, 72°" when weather is available, or just
 // "2:45 PM" when it isn't (no location configured, or the last fetch
 // failed) -- the clock always shows on its own once isReady() is true.
-// Returns false (leaving out untouched) only if the clock has neither
-// synced nor been seeded from a persisted previous sync this boot. The
-// temperature is always Fahrenheit and never carries a trailing unit
-// letter, per how this was asked to be shown.
+// Returns false (leaving out untouched) only if the clock hasn't synced yet
+// this boot. The temperature is always Fahrenheit and never carries a
+// trailing unit letter, per how this was asked to be shown.
 bool getStatusLineText(std::string& out);
 
 // True at most once per real-world minute rollover (and only once the
-// clock has synced or been seeded) -- purely a local time() check, no
-// network, no SD access. Meant to be called from the shell's own loop() so
+// clock has synced) -- purely a local time() check, no network, no SD
+// access. Meant to be called from the shell's own loop() so
 // it can trigger a plain requestUpdate() when this returns true: a cheap,
 // already-cached repaint (the same FAST_REFRESH pass a tab switch already
 // does) is enough to keep the visible clock accurate to the minute even
@@ -108,26 +106,31 @@ bool geocodeLocation(const std::string& query, std::string& outName, double& out
 bool locateByIp(std::string& outName, double& outLat, double& outLon);
 
 // True as long as the one-time automatic per-boot location/clock/weather
-// refresh below hasn't been attempted yet this boot AND the current
-// location (if any) wasn't typed in by hand -- see
-// WeatherLocationStore::isManualLocation(). AppShellActivity checks this
-// BEFORE calling refreshLocationAndClockOnce(), since that call blocks for
-// up to several seconds and a toast should be on screen before it starts,
-// not after.
+// refresh below hasn't been attempted yet this boot -- true for both auto
+// and manual location, since a manual location still needs its clock and
+// weather synced at least once. Callers that show a toast (AppShellActivity)
+// check this BEFORE calling refreshLocationAndClockOnce(), since that call
+// can block briefly and the toast should be on screen before it starts, not
+// after; a silent piggyback (EpubReaderActivity, right after a KOSync push
+// that already has WiFi up) doesn't need to check this first, since the
+// call itself is an instant no-op after the first attempt.
 bool wouldAttemptBootRefresh();
 
 // The one deliberate exception to "tick() never opens its own connection":
-// meant to be called once, the first time the person does something more
-// than glance at the Continue tab this boot (AppShellActivity calls this
-// right as they switch to Books/Book Server/Settings). Opens WiFi if
-// needed (same bounded budget ensureWifiConnectedActive() already uses
-// elsewhere for Settings' own explicit actions -- worst case a handful of
-// seconds, not the endless retry loop that used to cause a freeze), then
-// while that connection is open: re-detects location by IP (skipped
-// entirely if the saved location is manual), syncs the clock, and fetches
-// weather. Safe to call more than once -- every call after the first this
-// boot is an instant no-op regardless of whether the first attempt
-// succeeded.
+// meant to be called once, the first time the person does anything that
+// might reasonably need network this boot -- opening a book (which already
+// connects to push a KOSync position -- see EpubReaderActivity) or switching
+// off the Continue tab (AppShellActivity). Opens WiFi if needed (same
+// bounded budget ensureWifiConnectedActive() already uses elsewhere for
+// Settings' own explicit actions -- worst case a handful of seconds, not the
+// endless retry loop that used to cause a freeze; an instant no-op if
+// something else already has WiFi up, which is the common case for both
+// call sites above), then while that connection is open: re-detects location
+// by IP (skipped entirely if the saved location is manual), syncs the clock,
+// and fetches weather for whatever location (auto-detected or manually
+// typed) ends up configured. Safe to call more than once -- every call after
+// the first this boot is an instant no-op regardless of whether the first
+// attempt succeeded.
 void refreshLocationAndClockOnce();
 
 }  // namespace HomeStatusService

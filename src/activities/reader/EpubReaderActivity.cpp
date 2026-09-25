@@ -45,6 +45,7 @@
 #include "WifiCredentialStore.h"
 #include "activities/settings/TextSettingsActivity.h"
 #include "util/ContinueMetadataEnricher.h"
+#include "util/HomeStatusService.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BookmarkUtil.h"
@@ -351,6 +352,17 @@ void EpubReaderActivity::attemptOpenAutoSync() {
   // show up centered on Continue. A no-op for every ordinary open where
   // metadata already looked fine or was already attempted.
   if (WiFi.status() == WL_CONNECTED) {
+    // Same connection, same "the second I open a book, the network connects"
+    // moment -- this is what gets the title-bar clock and weather working
+    // immediately on opening a book, rather than waiting for the shell's own
+    // tab-switch hook (which never runs while a book is open). Silent (no
+    // toast): the reader is already on screen and this never blocks longer
+    // than the KOSync push above already did. Instant no-op after the first
+    // attempt this boot, same as every other call site.
+    if (HomeStatusService::wouldAttemptBootRefresh()) {
+      HomeStatusService::refreshLocationAndClockOnce();
+    }
+
     RecentBook currentBookInfo = RECENT_BOOKS.getDataFromBook(bookPath);
     currentBookInfo.path = bookPath;  // Ensure this is set even if the book isn't in recents yet.
     if (ContinueMetadataEnricher::tryEnrichIfOnline(currentBookInfo)) {

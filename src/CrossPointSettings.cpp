@@ -111,12 +111,11 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
     doc["keyboardLayouts"] = keyboardLayouts;
   }
 
-  // Last successful HomeStatusService clock sync (uint32_t, so it doesn't fit
-  // the uint8_t generic loop either). Omitted while never synced, same
-  // "absent means default" convention as keyboardLayouts above.
-  if (lastSyncedEpoch != 0) {
-    doc["lastSyncedEpoch"] = lastSyncedEpoch;
-  }
+  // Not in SettingsList (no on-device Settings screen entry -- set only via
+  // WeatherLocationActivity's "Set Time Zone" / location-picking flows), so
+  // it's saved by hand here rather than through the generic loop above,
+  // same as the front button remap fields.
+  doc["clockOffsetForced"] = clockOffsetForced;
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -240,10 +239,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     keyboardLayouts = doc["keyboardLayouts"].as<uint16_t>();
   }
 
-  // Absent means never synced, which is the default (0).
-  if (doc["lastSyncedEpoch"].is<uint32_t>()) {
-    lastSyncedEpoch = doc["lastSyncedEpoch"].as<uint32_t>();
-  }
+  // Not in SettingsList -- loaded by hand, same as saved. Absent (files
+  // written before this existed) means not forced, which is the default.
+  clockOffsetForced = clamp(doc["clockOffsetForced"] | (uint8_t)0, 2, 0);
 
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");

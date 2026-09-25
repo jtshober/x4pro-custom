@@ -165,15 +165,16 @@ void AppShellActivity::switchTab(const Tab tab) {
   if (tab != Tab::Continue) {
     // First time this boot the person does something more than glance at
     // Continue: worth spending a few bounded seconds (see
-    // HomeStatusService::refreshLocationAndClockOnce()) getting location,
-    // clock and weather right -- something tick() itself is never allowed
-    // to do on its own (see HomeStatusService.h's header comment on why
-    // not). Skipped entirely once a location has been typed in Settings
-    // (WeatherLocationStore::isManualLocation()), and only ever attempted
-    // once regardless of outcome. The toast goes up BEFORE the blocking
-    // call, not after, since that call is what makes it necessary.
+    // HomeStatusService::refreshLocationAndClockOnce()) getting clock and
+    // weather right -- something tick() itself is never allowed to do on
+    // its own (see HomeStatusService.h's header comment on why not). Runs
+    // for a manually-typed location too (just skips the IP re-detect step),
+    // and only ever attempted once regardless of outcome -- opening a book
+    // instead of a tab is the other, silent way this can already have
+    // happened by now (see EpubReaderActivity). The toast goes up BEFORE the
+    // blocking call, not after, since that call is what makes it necessary.
     if (HomeStatusService::wouldAttemptBootRefresh()) {
-      showToast("Refreshing location & time...");
+      showToast("Syncing time & weather...");
       HomeStatusService::refreshLocationAndClockOnce();
     }
     // Live tap while already on the shell: jump straight into the real
