@@ -344,7 +344,24 @@ void EpubReaderActivity::attemptOpenAutoSync() {
                              [this](KOReaderAutoSync::Message msg) { showAutoSyncToast(autoSyncMessageText(msg)); });
   endSyncStatusAttempt(statusTracked, pushResult.result);
 
-  // Piggybacks the connection this sync just used (never opens one itself,
+  // Opening a book is this app's real "I'm about to be online for a while"
+  // moment -- 90% of the time this is the only network activity that boot,
+  // since most opens don't even land on Continue or Settings first. Unlike
+  // the metadata enrichment piggyback below, this does NOT wait for the
+  // KOSync push above to have already connected: KOReaderAutoSync::push()
+  // is a silent no-op with WiFi never touched when KOReader sync isn't
+  // configured (see KOReaderAutoSync.cpp), which would otherwise mean a
+  // book-only reader never gets a clock/weather sync at all.
+  // refreshLocationAndClockOnce() opens its own short-lived connection if
+  // nothing already has WiFi up (same bounded budget Settings' own explicit
+  // actions use), so this fires the same whether or not KOSync is set up.
+  // Silent (no toast): the reader is already on screen. Instant no-op after
+  // the first attempt this boot, same as every other call site.
+  if (HomeStatusService::wouldAttemptBootRefresh()) {
+    HomeStatusService::refreshLocationAndClockOnce();
+  }
+
+  // Piggybacks whatever connection is now up (never opens one itself,
   // matching ContinueMetadataEnricher's own rule) to catch a book that was
   // just renamed via the File Browser's Edit option: a rename gives the
   // book a new path, which the enricher has never attempted before, so this
@@ -352,17 +369,6 @@ void EpubReaderActivity::attemptOpenAutoSync() {
   // show up centered on Continue. A no-op for every ordinary open where
   // metadata already looked fine or was already attempted.
   if (WiFi.status() == WL_CONNECTED) {
-    // Same connection, same "the second I open a book, the network connects"
-    // moment -- this is what gets the title-bar clock and weather working
-    // immediately on opening a book, rather than waiting for the shell's own
-    // tab-switch hook (which never runs while a book is open). Silent (no
-    // toast): the reader is already on screen and this never blocks longer
-    // than the KOSync push above already did. Instant no-op after the first
-    // attempt this boot, same as every other call site.
-    if (HomeStatusService::wouldAttemptBootRefresh()) {
-      HomeStatusService::refreshLocationAndClockOnce();
-    }
-
     RecentBook currentBookInfo = RECENT_BOOKS.getDataFromBook(bookPath);
     currentBookInfo.path = bookPath;  // Ensure this is set even if the book isn't in recents yet.
     if (ContinueMetadataEnricher::tryEnrichIfOnline(currentBookInfo)) {
