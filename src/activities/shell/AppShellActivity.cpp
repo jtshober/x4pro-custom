@@ -443,13 +443,9 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   constexpr int titleGap = 16;
   // Always reserve room for two lines, even for titles that end up using
   // one -- keeps the cover from shifting vertically as you swipe between
-  // books with short and long titles.
+  // books with short and long titles. No author line below it -- a
+  // right-sized title is sufficient, per how this was asked to look.
   const int titleBlockHeight = 2 * renderer.getLineHeight(TITLE_MAX_FONT_ID) + TITLE_LINE_GAP;
-  // Author gets its own single line below the title, always reserved (even
-  // for books with no author yet) so the block doesn't jump size as you
-  // swipe between books that do and don't have one.
-  constexpr int authorGap = 6;
-  const int authorLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
 
   // One shared box size for all three covers -- peeks included -- measured
   // from the centered book alone and capped so Continue never towers over
@@ -474,7 +470,7 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   }
 
   const bool hasNeighbors = recentBooks.size() > 1;
-  const int blockHeight = coverHeight + titleGap + titleBlockHeight + authorGap + authorLineHeight;
+  const int blockHeight = coverHeight + titleGap + titleBlockHeight;
   const int blockY = body.y + std::max(0, (body.height - blockHeight) / 2);
   const int centerX = body.x + (body.width - coverWidth) / 2;
 
@@ -495,19 +491,6 @@ void AppShellActivity::renderContinueBody(const Rect body) {
 
   const int titleBlockY = blockY + coverHeight + titleGap;
   drawFittedTitle(renderer, body, titleBlockY, titleBlockHeight, recentBooks[carouselIndex].title, body.width - 48);
-
-  const std::string& author = recentBooks[carouselIndex].author;
-  if (!author.empty()) {
-    const int authorY = titleBlockY + titleBlockHeight + authorGap;
-    const int maxWidth = body.width - 48;
-    std::string shown = author;
-    while (!shown.empty() && renderer.getTextWidth(SMALL_FONT_ID, shown.c_str()) > maxWidth) {
-      shown.pop_back();
-    }
-    if (shown.size() < author.size()) shown += "...";
-    const int width = renderer.getTextWidth(SMALL_FONT_ID, shown.c_str());
-    renderer.drawText(SMALL_FONT_ID, body.x + std::max(0, (body.width - width) / 2), authorY, shown.c_str());
-  }
 }
 
 void AppShellActivity::render(RenderLock&&) {
