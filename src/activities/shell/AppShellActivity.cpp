@@ -141,7 +141,7 @@ void drawFittedTitle(const GfxRenderer& renderer, const Rect body, const int blo
 // reshuffling.
 namespace geo_pattern {
 constexpr int MIN_BAND_HEIGHT = 20;  // Skip a band entirely below this -- too little room for even one row.
-constexpr int CELL = 26;             // Grid spacing, in pixels, between shape centers.
+constexpr int CELL = 19;             // Grid spacing, in pixels, between shape centers.
 constexpr int SKIP_PERCENT = 18;     // Chance (%) a grid cell is left empty, for breathing room.
 
 // Small deterministic PRNG (xorshift32) -- no <random>, no heap, and the same
