@@ -17,13 +17,13 @@
 #include "browser/OpdsBookBrowserActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
-#include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "network/UsbDriveActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
+#include "shell/AppShellActivity.h"
 #include "util/BmpViewerActivity.h"
 #include "util/FrontlightPanelActivity.h"
 #include "util/FullScreenMessageActivity.h"
@@ -343,6 +343,11 @@ void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::
 }
 
 void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefresh) {
+  // cleanInitialRefresh (wake-from-sleep full-refresh request) has no
+  // AppShellActivity equivalent yet -- the shell always does a normal
+  // refresh. Revisit if a HALF_REFRESH-on-wake regression shows up.
+  (void)cleanInitialRefresh;
+
   if (initialMenuItem == HomeMenuItem::NONE && currentActivity) {
     const auto& activityName = currentActivity->name;
     if (activityName == "FileBrowser") {
@@ -357,7 +362,15 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefr
       initialMenuItem = HomeMenuItem::SETTINGS_MENU;
     }
   }
-  replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, initialMenuItem, cleanInitialRefresh));
+
+  // HomeMenuItem -> starting shell tab. Always Continue: the Home gesture,
+  // waking with no book open, and backing out of any screen should all land
+  // there, not on whichever tab a screen "belongs to" -- explicit request.
+  // initialMenuItem is still computed above (harmless) but intentionally
+  // unused for tab selection now.
+  (void)initialMenuItem;
+  const AppShellActivity::Tab startTab = AppShellActivity::Tab::Continue;
+  replaceActivity(std::make_unique<AppShellActivity>(renderer, mappedInput, startTab));
 }
 void ActivityManager::goToCrashReport() { replaceActivity(std::make_unique<CrashActivity>(renderer, mappedInput)); }
 

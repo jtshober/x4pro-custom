@@ -8,12 +8,23 @@ READER_FONT_STYLES=("Regular" "Italic" "Bold" "BoldItalic")
 NOTOSERIF_FONT_SIZES=(12 14 16 18)
 NOTOSANS_FONT_SIZES=(12 14 16 18)
 
+# NOTOSERIF_*/NOTOSANS_* below keep their original generated filenames (so
+# fontIds.h and every call site across the app that references
+# NOTOSERIF_*_FONT_ID / NOTOSANS_*_FONT_ID needs zero changes) but now render
+# from iA Writer Mono S instead of Noto Serif/Sans -- this is the "everywhere,
+# one typeface" swap, covering both the reader body text (was NotoSerif) and
+# every themed UI screen that uses NOTOSANS_*_FONT_ID (was NotoSans).
+# iA Writer Mono S's own coverage (Latin, Latin Extended, Cyrillic, Greek --
+# verified against the uploaded TTFs) has no fallback font behind it here,
+# unlike the UI_* fonts below, so any character it doesn't cover will show as
+# a missing-glyph box rather than falling through to Noto. Revisit if that
+# turns out to matter for a language you actually use.
 for size in ${NOTOSERIF_FONT_SIZES[@]}; do
   for style in ${READER_FONT_STYLES[@]}; do
     font_name="notoserif_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
-    font_path="../builtinFonts/source/NotoSerif/NotoSerif-${style}.ttf"
+    font_path="../builtinFonts/source/iAWriterMonoS/iAWriterMonoS-${style}.ttf"
     output_path="../builtinFonts/${font_name}.h"
-    python fontconvert.py $font_name $size $font_path --2bit --compress --pnum --zopfli > $output_path
+    python3 fontconvert.py $font_name $size $font_path --2bit --compress --pnum --zopfli > $output_path
     echo "Generated $output_path"
   done
 done
@@ -21,9 +32,9 @@ done
 for size in ${NOTOSANS_FONT_SIZES[@]}; do
   for style in ${READER_FONT_STYLES[@]}; do
     font_name="notosans_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
-    font_path="../builtinFonts/source/NotoSans/NotoSans-${style}.ttf"
+    font_path="../builtinFonts/source/iAWriterMonoS/iAWriterMonoS-${style}.ttf"
     output_path="../builtinFonts/${font_name}.h"
-    python fontconvert.py $font_name $size $font_path --2bit --compress --pnum --zopfli > $output_path
+    python3 fontconvert.py $font_name $size $font_path --2bit --compress --pnum --zopfli > $output_path
     echo "Generated $output_path"
   done
 done
@@ -61,30 +72,35 @@ ARABIC_INTERVALS=(
   --additional-intervals 0xFE80,0xFEFC  # Presentation Forms-B: core Arabic + Lam-Alef
 )
 
+# UI_10/UI_12 (menus, headers, button hints) and SMALL_FONT_ID (status-bar
+# clock, the sync-failed mark, etc.) keep their Hebrew/Arabic/Vietnamese
+# fallback files unchanged below -- iA Writer Mono S doesn't cover those
+# scripts, so text in them still renders correctly, just from the same
+# fallback fonts as before instead of from the primary UI font.
 for size in ${UI_FONT_SIZES[@]}; do
   for style in ${UI_FONT_STYLES[@]}; do
     font_name="ubuntu_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
-    font_path="../builtinFonts/source/Ubuntu/Ubuntu-${style}.ttf"
+    font_path="../builtinFonts/source/iAWriterMonoS/iAWriterMonoS-${style}.ttf"
     hebrew_path="../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-${style}.ttf"
     arabic_path="../builtinFonts/source/NotoSansArabic/NotoSansArabic-${style}.ttf"
     # Ubuntu lacks the Latin Extended Additional block (U+1EA0-U+1EF9) used for
-    # Vietnamese tone marks. Append a Vietnamese-only Ubuntu cut so those glyphs
-    # are filled from it while every glyph Ubuntu already has stays unchanged
-    # (fontstack is ordered by descending priority).
+    # Vietnamese tone marks; iA Writer Mono S doesn't have it either. Keep the
+    # same Vietnamese-only Ubuntu cut as a fallback so those glyphs still
+    # render (fontstack is ordered by descending priority).
     viet_path="../builtinFonts/source/Ubuntu/Ubuntu-Vietnamese-${style}.ttf"
     output_path="../builtinFonts/${font_name}.h"
-    python fontconvert.py $font_name $size $font_path $hebrew_path $arabic_path $viet_path \
+    python3 fontconvert.py $font_name $size $font_path $hebrew_path $arabic_path $viet_path \
       --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > $output_path
     echo "Generated $output_path"
   done
 done
 
-python fontconvert.py notosans_8_regular 8 \
-  ../builtinFonts/source/NotoSans/NotoSans-Regular.ttf \
+python3 fontconvert.py notosans_8_regular 8 \
+  ../builtinFonts/source/iAWriterMonoS/iAWriterMonoS-Regular.ttf \
   ../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-Regular.ttf \
   ../builtinFonts/source/NotoSansArabic/NotoSansArabic-Regular.ttf \
   --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > ../builtinFonts/notosans_8_regular.h
 
 echo ""
 echo "Running compression verification..."
-python verify_compression.py ../builtinFonts/
+python3 verify_compression.py ../builtinFonts/

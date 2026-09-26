@@ -21,6 +21,7 @@
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
 #include "util/BookCacheUtils.h"
+#include "util/HomeStatusService.h"
 #include "util/OpdsFilename.h"
 #include "util/StringUtils.h"
 #include "util/UrlUtils.h"
@@ -355,6 +356,14 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
     errorMessage = tr(STR_NO_SERVER_URL);
     requestUpdate();
     return;
+  }
+
+  // Book Server browsing already needs the network up -- piggyback the
+  // once-per-boot clock/weather sync onto it (never opens a connection of
+  // its own -- see HomeStatusService.h). Instant no-op after the first
+  // success this boot.
+  if (WiFi.status() == WL_CONNECTED) {
+    HomeStatusService::refreshLocationAndClockOnce();
   }
 
   std::string url = UrlUtils::buildUrl(server.url, path);

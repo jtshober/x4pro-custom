@@ -231,7 +231,9 @@ void BmpViewerActivity::doSetSleepCover() {
     GUI.drawPopup(renderer, tr(STR_FAILED_LOWER));
   }
 
-  delay(1000);
+  // Success shortened to 500ms per request; the failure message stays at
+  // 1000ms so it's not missed.
+  delay(success ? 500 : 1000);
   onEnter();
 }
 

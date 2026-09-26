@@ -25,6 +25,8 @@ enum class SettingAction {
   DownloadFonts,
   TextSettings,
   KeyboardLayouts,
+  FileTransfer,
+  WeatherLocation,
 };
 
 struct SettingInfo {

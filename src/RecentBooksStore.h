@@ -11,6 +11,14 @@ struct RecentBook {
   std::string author;
   std::string coverBmpPath;
 
+  // True once ContinueMetadataEnricher has successfully replaced title/author
+  // with a confident Open Library match for this exact path. Title/author
+  // priority is: fetched metadata (this flag true) > filename > the book's
+  // own embedded metadata -- see RecentBooksStore::addBook(). A rename gives
+  // the book a new path, which starts this at false again, so a manually
+  // edited filename is always eligible to be looked up again.
+  bool metadataEnriched = false;
+
   bool operator==(const RecentBook& other) const { return path == other.path; }
 };
 
@@ -30,10 +38,19 @@ class RecentBooksStore : public PersistableStore<RecentBooksStore> {
   void toJson(JsonDocument& doc) const;
   bool fromJson(JsonVariantConst doc);
 
-  // Add a book to the recent list (moves to front if already exists)
-  void addBook(const std::string& path, const std::string& title, const std::string& author,
+  // Add a book to the recent list (moves to front if already exists).
+  // embeddedTitle/embeddedAuthor are the book's own metadata (EPUB/XTC
+  // embedded, or a filename-derived title for txt/md) -- used only as the
+  // last-resort display value. Whenever a fetched (Open Library) title is
+  // already on file for this exact path (see metadataEnriched above), that
+  // is kept instead; otherwise the path's own filename (not embeddedTitle)
+  // is shown until ContinueMetadataEnricher next has a chance to look it up.
+  void addBook(const std::string& path, const std::string& embeddedTitle, const std::string& embeddedAuthor,
                const std::string& coverBmpPath);
 
+  // Called only by ContinueMetadataEnricher on a confident match -- marks the
+  // entry metadataEnriched so a later addBook() (simply reopening the book)
+  // never clobbers this with the filename or embedded metadata again.
   void updateBook(const std::string& path, const std::string& title, const std::string& author,
                   const std::string& coverBmpPath);
 

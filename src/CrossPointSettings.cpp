@@ -110,6 +110,12 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   if (keyboardLayouts != 0) {
     doc["keyboardLayouts"] = keyboardLayouts;
   }
+
+  // Not in SettingsList (no on-device Settings screen entry -- set only via
+  // WeatherLocationActivity's "Set Time Zone" / location-picking flows), so
+  // it's saved by hand here rather than through the generic loop above,
+  // same as the front button remap fields.
+  doc["clockOffsetForced"] = clockOffsetForced;
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -232,6 +238,10 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   if (doc["keyboardLayouts"].is<uint16_t>()) {
     keyboardLayouts = doc["keyboardLayouts"].as<uint16_t>();
   }
+
+  // Not in SettingsList -- loaded by hand, same as saved. Absent (files
+  // written before this existed) means not forced, which is the default.
+  clockOffsetForced = clamp(doc["clockOffsetForced"] | (uint8_t)0, 2, 0);
 
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");

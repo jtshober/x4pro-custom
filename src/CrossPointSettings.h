@@ -94,7 +94,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
-  // Reader font size is a point size, not an enum slot — see fontPointSize.
+  // Reader font size is a point size, not an enum slot -- see fontPointSize.
   // Legacy 1.4-and-earlier files stored a 0..3 SMALL/MEDIUM/LARGE/EXTRA_LARGE
   // slot; fromJson() folds that range up (see LEGACY_FONT_SIZE_MAX).
   static constexpr uint8_t LEGACY_FONT_SIZE_MAX = 3;
@@ -221,6 +221,18 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t clockUtcOffsetQ = 48;
   // Clock display format: 0 = 24-hour, 1 = 12-hour
   uint8_t clockFormat = 0;
+  // When set, HomeStatusService's title-bar clock uses clockUtcOffsetQ
+  // unconditionally, ignoring any weather-fetch-derived offset even when one
+  // is available. Set to 1 whenever WeatherLocationActivity's "Set Time
+  // Zone" flow completes (an explicit manual choice), and cleared back to 0
+  // whenever a location is (re)picked via "Type a Location" or "Use Current
+  // Location" (an explicit vote of confidence in auto/weather again).
+  // Exists because IP-based auto-location can be reliably wrong for reasons
+  // outside this device's control (some carriers' IP blocks are registered
+  // to one fixed city nationwide, e.g. Seattle for many T-Mobile customers)
+  // -- without this, a person in that situation could never get a correct
+  // clock while weather kept "succeeding" for the wrong place.
+  uint8_t clockOffsetForced = 0;
   // Set once an NTP sync succeeds. Used to skip re-syncing on every WiFi connect.
   // Resetting to 0 (e.g. via the web UI) forces a re-sync on next WiFi connect.
   uint8_t clockHasBeenSynced = 0;
@@ -301,7 +313,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t backShortToFileBrowser = 0;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
-  // Tilt-based page turning (X3 only — requires QMI8658 IMU)
+  // Tilt-based page turning (X3 only -- requires QMI8658 IMU)
   uint8_t tiltPageTurn = TILT_OFF;
   // Touch screen reader zones/gestures on boards with a touch controller.
   uint8_t touchReaderControls = TOUCH_READER_SWIPE;
@@ -345,7 +357,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // Drop the SD font selection and fall back to the built-in family. The reader
   // point size comes back into BUILTIN_READER_POINT_SIZES with it, since that is
-  // the only set a built-in family ships — otherwise the settings UI would keep
+  // the only set a built-in family ships -- otherwise the settings UI would keep
   // offering a size nothing renders at. Both fields are persisted in one write.
   void clearSdFontFamily();
 
@@ -353,7 +365,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // editors read the raw fields.
   //
   // Deliberately NOT built under storeMutex: every field it reads is a single
-  // byte, so a concurrent settings write can never produce a corrupt value —
+  // byte, so a concurrent settings write can never produce a corrupt value --
   // only a snapshot mixing pre- and post-change fields. That costs at most one
   // e-ink frame drawn with a mixed status bar, which self-corrects on the next
   // refresh. Locking here would instead put a mutex on the render path and
@@ -384,7 +396,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   StatusBarSpec statusBarSpec() const;
 
   // Resolved text-rendering configuration for the Epub layout engine. The
-  // viewport is renderer/orientation-derived, so the caller supplies it —
+  // viewport is renderer/orientation-derived, so the caller supplies it --
   // passing it in keeps a spec from ever existing in a half-filled state.
   // Unlocked for the same reason as statusBarSpec(); see the note above.
   ReaderRenderSpec readerRenderSpec(uint16_t viewportWidth, uint16_t viewportHeight) const;
