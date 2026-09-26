@@ -28,10 +28,10 @@ struct Rect;
 //
 // Continue is fully custom-drawn: a swipeable carousel of your most recent
 // books, neighboring covers peeking at the edges, framed top and bottom by a
-// small ink-wash-style motif (see renderContinueArt) -- drawn as plain
-// vector shapes (fillPolygon/drawLine), not a bitmap, so it costs no flash
-// and renders correctly in all 4 orientations for free. Tapping the centered
-// cover opens it directly -- no separate button.
+// dense geometric wallpaper motif (see renderContinueArt) -- drawn as plain
+// vector shapes (fillPolygon/drawLine/drawArc), not a bitmap, so it costs no
+// flash and renders correctly in all 4 orientations for free. Tapping the
+// centered cover opens it directly -- no separate button.
 //
 // HomeActivity is left in the tree, untouched and simply unused: goHome() no
 // longer constructs it. Safer than deleting it while this is still unproven
@@ -69,8 +69,8 @@ class AppShellActivity final : public Activity {
   void switchTab(Tab tab);
   void renderTabBar(Rect rect);
   void renderContinueBody(Rect body);
-  // Small ink-wash-style motif drawn above and below the carousel/title
-  // block, confined to whatever vertical space is left over once that
+  // Dense geometric wallpaper pattern drawn above and below the carousel/
+  // title block, confined to whatever vertical space is left over once that
   // block's own height is known -- never overlaps it, on any screen size or
   // orientation. See the .cpp for what it actually draws and why it's pure
   // vector shapes rather than a stored image.

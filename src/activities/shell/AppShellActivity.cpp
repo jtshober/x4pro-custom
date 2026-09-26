@@ -11,7 +11,7 @@
 #include <Xtc.h>
 
 #include <algorithm>
-#include <cmath>
+#include <cstdint>
 
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
@@ -121,9 +121,9 @@ void drawFittedTitle(const GfxRenderer& renderer, const Rect body, const int blo
   drawCenteredLine(renderer, body, fontId, blockY + (blockHeight - lineHeight) / 2, truncated);
 }
 
-// ---- Continue tab: ink-wash-style decorative motif ------------------------
+// ---- Continue tab: geometric wallpaper motif -------------------------------
 //
-// Pure vector shapes (fillPolygon/drawLine/drawArc) rather than a stored
+// Pure vector shapes (drawLine/drawArc/fillPolygon) rather than a stored
 // image: this renderer's drawImage() doesn't rotate a bitmap's actual pixel
 // data for different screen orientations, only its origin point, and is
 // hard-capped at the panel's native row count -- a baked-in picture only
@@ -133,75 +133,215 @@ void drawFittedTitle(const GfxRenderer& renderer, const Rect body, const int blo
 // this screen uses, so the motif is correct in all 4 orientations for free,
 // and costs zero flash (no image data, just coordinates).
 //
-// Deliberately restrained: a low ridge of distant mountains (outline only)
-// behind one bold near peak, a small moon, and a few reed strokes -- meant
-// to read as "a bit of scenery," not to compete with the cover art sitting
-// between the two bands.
-namespace ink_wash {
-constexpr int MIN_BAND_HEIGHT = 34;  // Skip a band entirely below this -- too little room to look intentional.
+// A dense, all-over scatter of small shapes (filled/outline dots, diamonds,
+// triangles, crosses, arcs, dashes, zigzags, squiggles) laid out on a grid
+// whose rows step sideways from one another, so it reads as a tiled
+// wallpaper print rather than a single line of characters. Each band uses a
+// fixed seed, so the pattern is the same on every redraw instead of
+// reshuffling.
+namespace geo_pattern {
+constexpr int MIN_BAND_HEIGHT = 20;  // Skip a band entirely below this -- too little room for even one row.
+constexpr int CELL = 26;             // Grid spacing, in pixels, between shape centers.
+constexpr int SKIP_PERCENT = 18;     // Chance (%) a grid cell is left empty, for breathing room.
 
-void drawMountainBand(const GfxRenderer& renderer, const Rect body, const int bandTop, const int bandHeight) {
-  const int baseline = bandTop + bandHeight;
+// Small deterministic PRNG (xorshift32) -- no <random>, no heap, and the same
+// sequence every render so the wallpaper doesn't visibly shuffle each frame.
+uint32_t nextRand(uint32_t& state) {
+  state ^= state << 13;
+  state ^= state >> 17;
+  state ^= state << 5;
+  return state;
+}
 
-  // Distant ridge: an unfilled jagged line, not a solid shape -- reads as
-  // farther away without needing a gray fill this display can't do cheaply.
-  const int ridgeY = bandTop + bandHeight / 4;
-  const int ridgePeakY = bandTop;
-  int prevX = body.x - 10;
-  int prevY = ridgeY;
-  const int ridgeStepX = std::max(24, body.width / 10);
-  for (int x = body.x - 10; x <= body.x + body.width + 10; x += ridgeStepX) {
-    const int peak = ((x / ridgeStepX) % 2 == 0) ? ridgeY : ridgePeakY;
-    renderer.drawLine(prevX, prevY, x, peak, true);
+// Returns an integer in [0, boundExclusive).
+int randBelow(uint32_t& state, int boundExclusive) {
+  return static_cast<int>(nextRand(state) % static_cast<uint32_t>(boundExclusive));
+}
+
+enum ShapeKind {
+  ShapeDotFilled,
+  ShapeRing,
+  ShapeDiamondFilled,
+  ShapeDiamondOutline,
+  ShapeTriangleFilled,
+  ShapeTriangleOutline,
+  ShapePlus,
+  ShapeArc,
+  ShapeDash,
+  ShapeDiagDash,
+  ShapeZigzag,
+  ShapeSquiggle,
+  ShapeDotsPair,
+  SHAPE_COUNT
+};
+
+// Four quadrant fills sharing one center -- a thin ring when stroke < r, a
+// filled disc when stroke >= r (drawArc clamps the inner radius to 0).
+void drawDisc(const GfxRenderer& renderer, int cx, int cy, int r, int stroke) {
+  renderer.drawArc(r, cx, cy, -1, -1, stroke, true);
+  renderer.drawArc(r, cx, cy, 1, -1, stroke, true);
+  renderer.drawArc(r, cx, cy, 1, 1, stroke, true);
+  renderer.drawArc(r, cx, cy, -1, 1, stroke, true);
+}
+
+void drawDiamond(const GfxRenderer& renderer, int cx, int cy, int r, bool filled, int stroke) {
+  const int xs[4] = {cx, cx + r, cx, cx - r};
+  const int ys[4] = {cy - r, cy, cy + r, cy};
+  if (filled) {
+    renderer.fillPolygon(xs, ys, 4, true);
+    return;
+  }
+  for (int i = 0; i < 4; i++) {
+    const int j = (i + 1) % 4;
+    renderer.drawLine(xs[i], ys[i], xs[j], ys[j], stroke, true);
+  }
+}
+
+void drawTriangle(const GfxRenderer& renderer, int cx, int cy, int r, bool filled, bool up, int stroke) {
+  int xs[3];
+  int ys[3];
+  if (up) {
+    xs[0] = cx;
+    ys[0] = cy - r;
+    xs[1] = cx - r;
+    ys[1] = cy + r;
+    xs[2] = cx + r;
+    ys[2] = cy + r;
+  } else {
+    xs[0] = cx;
+    ys[0] = cy + r;
+    xs[1] = cx - r;
+    ys[1] = cy - r;
+    xs[2] = cx + r;
+    ys[2] = cy - r;
+  }
+  if (filled) {
+    renderer.fillPolygon(xs, ys, 3, true);
+    return;
+  }
+  for (int i = 0; i < 3; i++) {
+    const int j = (i + 1) % 3;
+    renderer.drawLine(xs[i], ys[i], xs[j], ys[j], stroke, true);
+  }
+}
+
+void drawPlus(const GfxRenderer& renderer, int cx, int cy, int r, int stroke) {
+  renderer.drawLine(cx - r, cy, cx + r, cy, stroke, true);
+  renderer.drawLine(cx, cy - r, cx, cy + r, stroke, true);
+}
+
+void drawDash(const GfxRenderer& renderer, int cx, int cy, int halfLen, int stroke) {
+  renderer.drawLine(cx - halfLen, cy, cx + halfLen, cy, stroke, true);
+}
+
+void drawDiagDash(const GfxRenderer& renderer, int cx, int cy, int r, int stroke) {
+  renderer.drawLine(cx - r, cy - r, cx + r, cy + r, stroke, true);
+}
+
+// A wide, angular "W" -- three sharp segments.
+void drawZigzag(const GfxRenderer& renderer, int cx, int cy, int halfWidth, int halfHeight, int stroke) {
+  const int xs[4] = {cx - halfWidth, cx - halfWidth / 3, cx + halfWidth / 3, cx + halfWidth};
+  const int ys[4] = {cy - halfHeight, cy + halfHeight, cy - halfHeight, cy + halfHeight};
+  for (int i = 0; i < 3; i++) {
+    renderer.drawLine(xs[i], ys[i], xs[i + 1], ys[i + 1], stroke, true);
+  }
+}
+
+// A softer, lower-amplitude wave than the zigzag -- five short segments.
+void drawSquiggle(const GfxRenderer& renderer, int cx, int cy, int halfWidth, int amp, int stroke) {
+  constexpr int N = 5;
+  int prevX = cx - halfWidth;
+  int prevY = cy;
+  for (int i = 1; i <= N; i++) {
+    const int x = cx - halfWidth + (2 * halfWidth * i) / N;
+    const int y = cy + ((i % 2 == 0) ? amp : -amp);
+    renderer.drawLine(prevX, prevY, x, y, stroke, true);
     prevX = x;
-    prevY = peak;
-  }
-
-  // Near peak: one bold filled silhouette, off-center so it doesn't sit
-  // directly over the carousel's centered cover below it.
-  const int peakX = body.x + body.width * 2 / 5;
-  const int peakWidth = std::min(body.width * 3 / 5, 220);
-  const int xPts[4] = {peakX - peakWidth / 2, peakX - peakWidth / 6, peakX + peakWidth / 3, peakX + peakWidth / 2};
-  const int yPts[4] = {baseline, bandTop + bandHeight / 3, bandTop, baseline};
-  renderer.fillPolygon(xPts, yPts, 4, true);
-
-  // A small moon in the opposite corner from the near peak, clear of both
-  // silhouettes.
-  const int moonR = std::max(6, bandHeight / 7);
-  const int moonCx = (peakX < body.x + body.width / 2) ? body.x + body.width - moonR - 10 : body.x + moonR + 10;
-  const int moonCy = bandTop + moonR + 2;
-  constexpr int MOON_SIDES = 14;
-  int moonX[MOON_SIDES];
-  int moonY[MOON_SIDES];
-  for (int i = 0; i < MOON_SIDES; i++) {
-    const float angle = 2.0f * 3.14159265f * static_cast<float>(i) / static_cast<float>(MOON_SIDES);
-    moonX[i] = moonCx + static_cast<int>(moonR * cosf(angle));
-    moonY[i] = moonCy + static_cast<int>(moonR * sinf(angle));
-  }
-  renderer.fillPolygon(moonX, moonY, MOON_SIDES, true);
-}
-
-void drawReedBand(const GfxRenderer& renderer, const Rect body, const int bandTop, const int bandHeight) {
-  const int baseline = bandTop + bandHeight;
-  // A calm waterline just under the reeds -- one long, mostly-straight
-  // stroke with a couple of small ripples, not a filled band.
-  const int waterY = bandTop + bandHeight / 4;
-  renderer.drawLine(body.x, waterY, body.x + body.width, waterY, true);
-
-  // A handful of reed strokes of varying height, each a slight bend rather
-  // than a straight line -- two segments meeting partway up.
-  constexpr int REED_COUNT = 6;
-  const int spacing = body.width / (REED_COUNT + 1);
-  for (int i = 0; i < REED_COUNT; i++) {
-    const int reedX = body.x + spacing * (i + 1);
-    const int reedHeight = bandHeight - 4 - (i % 3) * (bandHeight / 6);
-    const int bendX = reedX + ((i % 2 == 0) ? -6 : 6);
-    const int bendY = baseline - reedHeight / 2;
-    renderer.drawLine(reedX, baseline, bendX, bendY, true);
-    renderer.drawLine(bendX, bendY, bendX + ((i % 2 == 0) ? -5 : 5), baseline - reedHeight, true);
+    prevY = y;
   }
 }
-}  // namespace ink_wash
+
+void drawDotsPair(const GfxRenderer& renderer, int cx, int cy, int gap) {
+  renderer.fillRect(cx - gap / 2 - 1, cy - 1, 2, 2, true);
+  renderer.fillRect(cx + gap / 2 - 1, cy - 1, 2, 2, true);
+}
+
+void drawShape(const GfxRenderer& renderer, ShapeKind shape, int cx, int cy, uint32_t& rng) {
+  // Weighted toward thin/medium strokes, with an occasional bold one -- a mix
+  // of line weights rather than everything drawn at the same thickness.
+  const int stroke = (randBelow(rng, 5) >= 3) ? 2 : 1;
+  switch (shape) {
+    case ShapeDotFilled:
+      drawDisc(renderer, cx, cy, 3 + randBelow(rng, 2), 6);
+      break;
+    case ShapeRing:
+      drawDisc(renderer, cx, cy, 4 + randBelow(rng, 2), stroke);
+      break;
+    case ShapeDiamondFilled:
+      drawDiamond(renderer, cx, cy, 4 + randBelow(rng, 2), true, stroke);
+      break;
+    case ShapeDiamondOutline:
+      drawDiamond(renderer, cx, cy, 5 + randBelow(rng, 2), false, stroke);
+      break;
+    case ShapeTriangleFilled:
+      drawTriangle(renderer, cx, cy, 4 + randBelow(rng, 2), true, randBelow(rng, 2) == 0, stroke);
+      break;
+    case ShapeTriangleOutline:
+      drawTriangle(renderer, cx, cy, 5 + randBelow(rng, 2), false, randBelow(rng, 2) == 0, stroke);
+      break;
+    case ShapePlus:
+      drawPlus(renderer, cx, cy, 4 + randBelow(rng, 2), stroke);
+      break;
+    case ShapeArc:
+      renderer.drawArc(5 + randBelow(rng, 2), cx, cy, randBelow(rng, 2) == 0 ? -1 : 1,
+                       randBelow(rng, 2) == 0 ? -1 : 1, stroke, true);
+      break;
+    case ShapeDash:
+      drawDash(renderer, cx, cy, 6, std::max(stroke, 2));
+      break;
+    case ShapeDiagDash:
+      drawDiagDash(renderer, cx, cy, 4 + randBelow(rng, 2), stroke);
+      break;
+    case ShapeZigzag:
+      drawZigzag(renderer, cx, cy, 8, 5, stroke);
+      break;
+    case ShapeSquiggle:
+      drawSquiggle(renderer, cx, cy, 8, 4, stroke);
+      break;
+    case ShapeDotsPair:
+      drawDotsPair(renderer, cx, cy, 6);
+      break;
+    default:
+      break;
+  }
+}
+
+// Fills [bandTop, bandTop + bandHeight) across the full width of `body` with
+// a dense scatter of small shapes on a grid whose rows step sideways from
+// one another (a third of a cell per row), so it tiles like a printed
+// pattern instead of reading as one line of characters. `seed` keeps the
+// band looking the same on every redraw rather than reshuffling.
+void drawWallpaperBand(const GfxRenderer& renderer, const Rect body, const int bandTop, const int bandHeight,
+                       uint32_t seed) {
+  uint32_t rng = seed;
+  const int rows = std::max(1, bandHeight / CELL);
+  int lastShape = -1;
+  for (int row = 0; row < rows; row++) {
+    const int cy = bandTop + row * CELL + CELL / 2;
+    const int rowOffset = (row * (CELL / 3)) % CELL;
+    const int startX = body.x - CELL + rowOffset;
+    for (int cx = startX; cx <= body.x + body.width + CELL; cx += CELL) {
+      if (randBelow(rng, 100) < SKIP_PERCENT) continue;
+      int shape = randBelow(rng, SHAPE_COUNT);
+      if (shape == lastShape) {
+        shape = (shape + 1) % SHAPE_COUNT;
+      }
+      lastShape = shape;
+      drawShape(renderer, static_cast<ShapeKind>(shape), cx, cy, rng);
+    }
+  }
+}
+}  // namespace geo_pattern
 }  // namespace
 
 void AppShellActivity::onEnter() {
@@ -502,11 +642,14 @@ void AppShellActivity::renderCoverBox(const int x, const int y, const int boxWid
 }
 
 void AppShellActivity::renderContinueArt(const Rect body, const int topGapHeight, const int bottomGapHeight) const {
-  if (topGapHeight >= ink_wash::MIN_BAND_HEIGHT) {
-    ink_wash::drawMountainBand(renderer, body, body.y, topGapHeight);
+  // Two fixed, distinct seeds -- arbitrary nonzero 32-bit constants -- so the
+  // top and bottom bands don't draw as mirror images of each other.
+  if (topGapHeight >= geo_pattern::MIN_BAND_HEIGHT) {
+    geo_pattern::drawWallpaperBand(renderer, body, body.y, topGapHeight, 0x9E3779B9u);
   }
-  if (bottomGapHeight >= ink_wash::MIN_BAND_HEIGHT) {
-    ink_wash::drawReedBand(renderer, body, body.y + body.height - bottomGapHeight, bottomGapHeight);
+  if (bottomGapHeight >= geo_pattern::MIN_BAND_HEIGHT) {
+    geo_pattern::drawWallpaperBand(renderer, body, body.y + body.height - bottomGapHeight, bottomGapHeight,
+                                   0x85EBCA6Bu);
   }
 }
 
@@ -550,10 +693,10 @@ void AppShellActivity::renderContinueBody(const Rect body) {
   const int blockY = body.y + std::max(0, (body.height - blockHeight) / 2);
 
   // Whatever room is left above and below the carousel/title block once its
-  // own height is known -- the ink-wash motif is confined to exactly this
-  // space, so it can never overlap the covers or the title on any screen
-  // size or orientation. A cramped screen just gets less (or no) art rather
-  // than something squeezed and illegible -- see MIN_BAND_HEIGHT.
+  // own height is known -- the geometric wallpaper is confined to exactly
+  // this space, so it can never overlap the covers or the title on any
+  // screen size or orientation. A cramped screen just gets less (or no) art
+  // rather than something squeezed and illegible -- see MIN_BAND_HEIGHT.
   renderContinueArt(body, blockY - body.y, (body.y + body.height) - (blockY + blockHeight));
 
   const int centerX = body.x + (body.width - coverWidth) / 2;
